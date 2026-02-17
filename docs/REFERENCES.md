@@ -340,7 +340,7 @@ docker logs container
 
 - **RFC 7231**: HTTP/1.1 Semantics and Content
   - URL: https://datatracker.ietf.org/doc/html/rfc7231
-  - Defines: 401 Unauthorized, 429 Too Many Requests
+  - Defines: 401 Unauthorized
 
 - **RFC 6585**: Additional HTTP Status Codes
   - URL: https://datatracker.ietf.org/doc/html/rfc6585

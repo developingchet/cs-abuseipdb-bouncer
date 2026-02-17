@@ -80,7 +80,7 @@ Small documentation fixes can be submitted directly as pull requests. For larger
    ```bash
    git clone https://github.com/developingchet/cs-abuseipdb-bouncer.git
    cd cs-abuseipdb-bouncer
-   git remote add upstream https://github.com/originaluser/cs-abuseipdb-bouncer.git
+   git remote add upstream https://github.com/developingchet/cs-abuseipdb-bouncer.git
    ```
 
 2. Create a development environment file:
@@ -213,7 +213,7 @@ esac
 - Run as non-root user
 
 **2. docker-compose.yml**
-- Use version 3.8+
+- Do not include a `version` field — it is deprecated and ignored in Docker Compose v2
 - Include healthchecks
 - Provide clear comments for user-editable sections
 - Use named volumes for state

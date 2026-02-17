@@ -37,14 +37,20 @@ Architecture decisions and design philosophy for the CrowdSec AbuseIPDB Bouncer.
            v
 ┌────────────────────────────────┐
 │ crowdsec-abuseipdb-reporter.sh │ (POSIX ash script)
-│  1. Parse JSON                 │
-│  2. Filter private IPs         │
-│  3. Check origin whitelist     │
-│  4. Map scenario→categories    │
-│  5. Check cooldown state       │
-│  6. Check daily budget         │
-│  7. POST to AbuseIPDB          │
-│  8. Update state               │
+│   1. Parse JSON                │
+│   2. Skip if action != "add"   │
+│   3. Skip impossible-travel    │
+│   4. Check origin whitelist    │
+│   5. Skip if scope != "Ip"     │
+│   6. Skip if value is empty    │
+│   7. Skip private IP ranges    │
+│   8. Check min_duration filter │
+│   9. Check daily budget        │
+│  10. Check per-IP cooldown     │
+│  11. Optional: /check precheck │
+│  12. Map scenario→categories   │
+│  13. POST to AbuseIPDB         │
+│  14. Update state files        │
 └────────────┬───────────────────┘
              │
              │ HTTPS POST
@@ -271,11 +277,15 @@ docker inspect abuseipdb-bouncer | grep -i 'api.*key'  # Should show only env va
 ```
 Attempt 1: Immediate call
          ↓ (fails)
-Attempt 2: Wait 5s, retry
+         Wait 5s
+         ↓
+Attempt 2: Retry
          ↓ (fails)
-Attempt 3: Wait 10s, retry
+         Wait 10s
+         ↓
+Attempt 3: Retry
          ↓ (fails)
-Attempt 4: Give up, log error
+         Give up, log error
 ```
 
 **Exceptions:**
@@ -300,9 +310,9 @@ Attempt 4: Give up, log error
 **SIGTERM/SIGINT:** Trap cleanup on exit.
 
 ```bash
-trap cleanup EXIT INT TERM
+trap _cleanup EXIT INT TERM
 
-cleanup() {
+_cleanup() {
     find "$COOLDOWN_DIR" -maxdepth 1 -type f -mmin +15 -delete 2>/dev/null || true
 }
 ```
@@ -315,17 +325,21 @@ Ensures stale cooldown files are pruned even on unclean shutdown.
 
 **Anti-pattern:**
 ```bash
-action=$(echo "$line" | jq -r '.action')
-origin=$(echo "$line" | jq -r '.origin')
-scenario=$(echo "$line" | jq -r '.scenario')
-# ... 4 more jq calls
+action=$(printf '%s' "$line" | jq -r '.action')
+origin=$(printf '%s' "$line" | jq -r '.origin')
+scenario=$(printf '%s' "$line" | jq -r '.scenario')
+# ... 4 more jq calls per decision
 ```
 
 **Optimized:**
 ```bash
-parsed=$(echo "$line" | jq -r '(.action//""), (.origin//""'), ...')
-action=$(echo "$parsed" | sed -n '1p')
-origin=$(echo "$parsed" | sed -n '2p')
+parsed=$(printf '%s' "$line" | jq -r '
+    (.action   // ""),
+    (.origin   // ""),
+    (.scenario // "unknown")
+')
+action=$(printf '%s' "$parsed" | sed -n '1p')
+origin=$(printf '%s' "$parsed" | sed -n '2p')
 ```
 
 **Benefit:** Reduces jq subprocess spawns from 7 to 1 per decision (~70% reduction in CPU time for JSON parsing).

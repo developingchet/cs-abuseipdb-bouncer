@@ -547,7 +547,7 @@ Ensure firewall rules allow the bouncer host to reach the LAPI port.
 
 ### Example 3: Kubernetes Deployment
 
-For Kubernetes, see the Helm chart in the `k8s/` directory (community contribution).
+Kubernetes support is not included in this repository. If you need a Helm chart or Kubernetes manifests, open a discussion at https://github.com/developingchet/cs-abuseipdb-bouncer/discussions — community contributions are welcome.
 
 ## Troubleshooting
 
