@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/5d195eb7-00aa-4496-91e6-98bb27bbce27" width="843" alt="CrowdSec AbuseIPDB Bouncer Logo" style="max-width: 100%; height: auto;">
+  <img src="https://github.com/user-attachments/assets/f4155487-8533-4aea-b6a1-0b723bfe8dec"  width="590" alt="CrowdSec AbuseIPDB Bouncer Logo" style="max-width: 100%; height: auto;">
 </p>
 
 # CrowdSec AbuseIPDB Bouncer
