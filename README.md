@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/5d195eb7-00aa-4496-91e6-98bb27bbce27" width="843" alt="CrowdSec AbuseIPDB Bouncer Logo" style="max-width: 100%; height: auto;">
+</p>
+
 # CrowdSec AbuseIPDB Bouncer
 
 A production-ready CrowdSec custom bouncer that automatically reports malicious IP addresses to AbuseIPDB in real-time.
