@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/bouncer"
@@ -129,6 +131,11 @@ func initLogging(level string, format string) {
 	} else {
 		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 	}
+
+	// go-cs-bouncer uses logrus internally. Silence it so its text-format lines
+	// don't appear mixed in with our structured JSON output. Errors from the
+	// bouncer library are returned as Go errors and logged via zerolog below.
+	logrus.SetOutput(io.Discard)
 
 	switch level {
 	case "trace":
