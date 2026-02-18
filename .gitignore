@@ -14,7 +14,9 @@
 
 config.yaml
 config.yml
-*.local                # e.g. docker-compose.local.yml, .env.local
+*.local                # e.g. docker-compose.local, .env.local
+*.local.md             # local notes (e.g. RELEASE.local.md)
+*.local.yml            # e.g. docker-compose.local.yml
 
 # ------------------------------------------------------------------------------
 # BBOLT STATE — runtime database and lock files
