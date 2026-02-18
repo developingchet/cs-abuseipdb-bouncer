@@ -6,6 +6,7 @@ ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
 RUN apk add --no-cache ca-certificates tzdata
+RUN mkdir -p /data
 
 WORKDIR /build
 
@@ -48,6 +49,10 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 COPY --from=builder /bouncer /usr/local/bin/bouncer
+
+# Pre-create /data owned by the nonroot user so Docker seeds the named volume
+# with UID 65532 on first creation — no manual chown required.
+COPY --from=builder --chown=65532:65532 /data /data
 
 # Persistent state directory — mount a named volume here.
 VOLUME ["/data"]

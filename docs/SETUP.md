@@ -284,17 +284,16 @@ Expected: `healthy`
 Verify the named volume is mounted:
 
 ```bash
-docker inspect abuseipdb-bouncer | jq -r '.[0].Mounts[] | select(.Destination == "/tmp/cs-abuseipdb") | .Name'
+docker inspect abuseipdb-bouncer | jq -r '.[0].Mounts[] | select(.Destination == "/data") | .Name'
 ```
 
-Check the daily counter:
+Verify the state database exists:
 
 ```bash
-# Access state via a temporary container sharing the volume
-docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine cat /state/daily
+docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine ls -lh /state/state.db
 ```
 
-Expected: `1 2026-02-17` (or `0` on a fresh install with no reports sent).
+Expected: `state.db` is present after the first LAPI poll cycle (absent on a completely fresh install with zero decisions processed).
 
 ### Log Rotation
 

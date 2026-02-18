@@ -58,6 +58,31 @@ All three must be set and non-empty. `CROWDSEC_LAPI_URL` must include the scheme
 docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
 ```
 
+### Volume permission denied at startup
+
+**Symptom:** Container exits immediately on first run.
+
+```json
+{"level":"error","error":"open /data/state.db: permission denied","msg":"fatal"}
+```
+
+**Cause:** The named volume was created before the image embedded `/data` with the correct ownership. Docker provisioned the volume owned `root:root`; the process (UID 65532) cannot write to it.
+
+**Fix (one-time, only needed for volumes created before this was fixed):**
+
+```bash
+# Find your volume name (compose project name prefix + "bouncer-state")
+docker volume ls | grep bouncer-state
+
+# Repair ownership — replace <volume-name> with the name above
+docker run --rm -v <volume-name>:/data alpine chown 65532:65532 /data
+
+# Restart
+docker compose up -d
+```
+
+**Fresh installs:** No action required — the image now embeds `/data` owned by UID 65532 and Docker seeds new volumes with that ownership automatically.
+
 ---
 
 ## No Decisions Being Reported

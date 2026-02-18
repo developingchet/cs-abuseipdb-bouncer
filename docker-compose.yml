@@ -81,6 +81,8 @@ services:
       - crowdsec-net
 
 volumes:
+  # Docker seeds this volume from the image's /data directory on first creation.
+  # Ownership (UID 65532) is baked into the image — no manual chown required.
   bouncer-state:
     driver: local
 

@@ -107,6 +107,8 @@ docker logs -f abuseipdb-bouncer
 docker exec crowdsec cscli bouncers list
 ```
 
+> If the container exits immediately with `permission denied` on `/data/state.db`, see [Volume Permissions](docs/TROUBLESHOOTING.md#volume-permission-denied-at-startup) in the troubleshooting guide.
+
 Expected startup log (JSON format):
 
 ```json
