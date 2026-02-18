@@ -146,6 +146,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: developingchet/cs-abuseipdb-bouncer
+          readme-filepath: ./DOCKERHUB.md
+
   # ── 5. GitHub Release ────────────────────────────────────────────────────────
   release:
     name: GitHub Release
