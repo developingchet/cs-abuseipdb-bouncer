@@ -1,0 +1,123 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_AARCH64"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "read",
+        "write",
+        "open",
+        "openat",
+        "openat2",
+        "close",
+        "stat",
+        "fstat",
+        "lstat",
+        "fstatfs",
+        "lseek",
+        "fsync",
+        "fdatasync",
+        "ftruncate",
+        "rename",
+        "unlink",
+        "mkdir",
+        "access",
+        "faccessat",
+        "newfstatat",
+        "getcwd"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "File I/O"
+    },
+    {
+      "names": [
+        "mmap",
+        "mprotect",
+        "munmap",
+        "mremap",
+        "madvise",
+        "brk"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Memory management"
+    },
+    {
+      "names": [
+        "socket",
+        "connect",
+        "bind",
+        "listen",
+        "accept",
+        "accept4",
+        "getsockname",
+        "getpeername",
+        "setsockopt",
+        "getsockopt",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
+        "shutdown"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Network (TCP)"
+    },
+    {
+      "names": [
+        "poll",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_pwait",
+        "select",
+        "pselect6",
+        "pipe2",
+        "eventfd2"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "I/O multiplexing"
+    },
+    {
+      "names": [
+        "clone3",
+        "futex",
+        "set_robust_list",
+        "get_robust_list",
+        "sched_yield",
+        "tgkill",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigreturn",
+        "sigaltstack"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Threading and synchronisation"
+    },
+    {
+      "names": [
+        "clock_gettime",
+        "clock_getres",
+        "nanosleep",
+        "clock_nanosleep",
+        "gettimeofday"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Clock and time"
+    },
+    {
+      "names": [
+        "exit_group",
+        "getpid",
+        "gettid",
+        "dup2",
+        "dup3",
+        "getrandom",
+        "arch_prctl"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "comment": "Process"
+    }
+  ]
+}

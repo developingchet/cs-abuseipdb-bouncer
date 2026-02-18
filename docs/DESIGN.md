@@ -8,9 +8,11 @@ Architecture decisions and design philosophy for the CrowdSec AbuseIPDB Bouncer.
 - [Process Model](#process-model)
 - [Security Architecture](#security-architecture)
 - [Decision Filter Pipeline](#decision-filter-pipeline)
+- [Concurrent Worker Pool](#concurrent-worker-pool)
 - [Sink Interface](#sink-interface)
 - [State Management](#state-management)
 - [Retry Logic](#retry-logic)
+- [Supply-Chain Security](#supply-chain-security)
 - [Testing Strategy](#testing-strategy)
 
 ---
@@ -86,13 +88,31 @@ read_only: true          # Root filesystem is read-only
 cap_drop: [ALL]          # No Linux capabilities
 security_opt:
   - no-new-privileges    # Cannot gain privileges via setuid
+  - "seccomp:./security/seccomp-bouncer.json"
 ```
 
-The container runs as UID 65532 (the distroless nonroot user). It writes only to `/tmp/cs-abuseipdb`, which is mounted as a named volume or tmpfs.
+The container runs as UID 65532 (the distroless nonroot user). It writes only to `/data` (named volume, bbolt database) and `/tmp` (tmpfs mount for the Go runtime).
+
+### Seccomp Profile
+
+`security/seccomp-bouncer.json` is a minimal OCI seccomp profile with `defaultAction: SCMP_ACT_ERRNO`. It permits only the syscalls the bouncer actually uses, grouped by function:
+
+- **File I/O:** `read`, `write`, `open`, `openat`, `close`, `stat`, `fstat`, `lstat`, `fstatfs`, `lseek`, `fsync`, `fdatasync`, `ftruncate`, `rename`, `unlink`, `mkdir`, `access`, `faccessat`, `newfstatat`, `getcwd`, `openat2`
+- **Memory:** `mmap`, `mprotect`, `munmap`, `mremap`, `madvise`, `brk`
+- **Network (TCP):** `socket`, `connect`, `bind`, `listen`, `accept`, `accept4`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt`, `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `shutdown`
+- **I/O multiplexing:** `poll`, `epoll_create1`, `epoll_ctl`, `epoll_pwait`, `select`, `pselect6`, `pipe2`, `eventfd2`
+- **Threading/sync:** `clone3`, `futex`, `set_robust_list`, `get_robust_list`, `sched_yield`, `tgkill`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `sigaltstack`
+- **Clock/time:** `clock_gettime`, `clock_getres`, `nanosleep`, `clock_nanosleep`, `gettimeofday`
+- **Process:** `exit_group`, `getpid`, `gettid`, `dup2`, `dup3`, `getrandom`, `arch_prctl`
 
 ### Secret Handling
 
-API keys are loaded exclusively from environment variables. They are never written to disk, never appear in log output, and are not baked into the image. The `.env` file (which contains the keys) is listed in `.gitignore`.
+API keys are loaded exclusively from environment variables. They are never written to disk and are not baked into the image. A `RedactWriter` (`internal/logger/redact.go`) wraps stderr and applies two regular expressions before any log line reaches the output:
+
+1. `[A-Fa-f0-9]{80}` → `[REDACTED-API-KEY]` — matches the 80-character hex format used by both AbuseIPDB and CrowdSec API keys
+2. `(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*` → `bearer [REDACTED]` — matches Bearer tokens in any case
+
+The writer always returns `len(p)` (the original byte count) to satisfy zerolog's internal accounting even when the redacted output is shorter.
 
 ### TLS Policy
 
@@ -112,7 +132,11 @@ This is set unconditionally in the AbuseIPDB client. For LAPI connections, the `
 
 ## Decision Filter Pipeline
 
-Decisions pass through nine ordered filters before reaching any sink. The first filter to reject a decision terminates the pipeline (short-circuit evaluation).
+Decisions pass through two ordered pipelines:
+
+### Pre-Queue Pipeline (main event loop — stateless, no I/O)
+
+Seven filters run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
 
 ```
 Decision from LAPI
@@ -142,18 +166,37 @@ Decision from LAPI
 7. MinDurationFilter(cfg)       -- reject short bans (optional)
        |
        v
-8. QuotaFilter(quota)           -- reject when daily limit reached
+   [enqueue to worker pool — non-blocking, drops on overflow]
+```
+
+### Worker-Side Checks (atomic bbolt transactions)
+
+Each worker dequeues a job and runs two atomic store operations before calling any sink:
+
+```
+Worker receives job
        |
        v
-9. CooldownFilter(cooldown)     -- reject within 15-min window
-       |
+8. CooldownConsume(ip)          -- single bolt.Update:
+                                   read expiry, check, set, commit
+       |  false → skip (no quota consumed)
+       v
+9. QuotaConsume()               -- single bolt.Update:
+                                   read count, check, increment, commit
+       |  false → skip
        v
    AbuseIPDB sink
 ```
 
-Each filter is a typed function: `func(d *Decision) *SkipReason`. Returning `nil` passes; returning a `*SkipReason` rejects with a named reason for logging.
+The order (cooldown before quota) is intentional: a cooldown hit does not consume a quota unit.
 
-This pipeline is tested exhaustively in `internal/decision/filter_test.go` and `internal/bouncer/bouncer_test.go`.
+### Why Two Pipelines?
+
+The original single synchronous pipeline (all 9 filters in the event loop) blocked the event loop for the duration of every AbuseIPDB HTTP round-trip (up to ~15 s with retries during rate-limiting). During a high-frequency ban wave, decisions could back up in the LAPI stream while the bouncer waited for one HTTP call to complete.
+
+The two-pipeline design separates the fast stateless checks (nanoseconds, run in the loop) from the slow I/O-bound operations (milliseconds to seconds, run in parallel workers). The quota and cooldown checks were moved to the worker side because they require write access to the bbolt database -- a serialisation point anyway -- and are tightly coupled to the decision whether to actually call AbuseIPDB.
+
+Each filter is a typed function: `func(d *Decision) *SkipReason`. Returning `nil` passes; returning a `*SkipReason` rejects with a named reason for logging and metrics.
 
 ### Impossible-Travel Exclusion
 
@@ -182,6 +225,45 @@ fc00::/7        IPv6 unique local (RFC 4193)
 
 ---
 
+## Concurrent Worker Pool
+
+### Design
+
+`internal/bouncer/pool.go` implements a fixed-size goroutine pool backed by a buffered channel:
+
+```go
+type workerPool struct {
+    jobCh chan workerJob   // bounded channel (WORKER_BUFFER capacity)
+    wg    sync.WaitGroup  // tracks live workers
+    store storage.Store
+    sinks []sink.Sink
+}
+```
+
+**Submission** is non-blocking. If the channel is full, the job is dropped and `DecisionsSkipped.WithLabelValues("buffer-full")` is incremented. This prevents the event loop from ever blocking on the pool, at the cost of dropping decisions during traffic spikes. The buffer size (`WORKER_BUFFER`, default 256) should be set to match the expected burst depth.
+
+**Shutdown** is cooperative: `pool.stop()` closes `jobCh`, which causes workers to drain remaining buffered jobs (if the context is still live) and then exit. `wg.Wait()` ensures all workers have fully exited before the function returns. This is called both on context cancellation and on LAPI stream close.
+
+### Known Limit: bbolt Write Serialisation
+
+bbolt serialises all write transactions — only one `db.Update` runs at a time. Under very high concurrency this means `CooldownConsume` and `QuotaConsume` calls from different workers queue behind each other. In practice, the AbuseIPDB HTTP round-trip (100 ms–15 s) dominates worker latency by orders of magnitude, so bbolt is never the bottleneck at realistic worker counts (default 4, max 64).
+
+If bbolt serialisation does become a bottleneck at very high scale, the recommended path is to replace `BoltStore` with a Redis-backed implementation of the `Store` interface — the interface boundary (`QuotaConsume`, `CooldownConsume`) is already designed for atomic operations.
+
+### Response Buffer Pooling
+
+`internal/sink/abuseipdb/client.go` uses a `sync.Pool` of `*bytes.Buffer` to reuse response body read buffers across concurrent requests:
+
+```go
+var respBufPool = sync.Pool{
+    New: func() any { return bytes.NewBuffer(make([]byte, 0, 4096)) },
+}
+```
+
+Each use copies the buffer contents to a fresh `[]byte` before returning the buffer to the pool. This prevents use-after-pool-put bugs while still avoiding per-request heap allocations for the common case where responses fit within 4096 bytes.
+
+---
+
 ## Sink Interface
 
 ```go
@@ -201,26 +283,46 @@ Sinks own their own category mapping. The `Report` struct carries only `IP`, `De
 
 ## State Management
 
-State is stored as plain files in a configurable directory (default `/tmp/cs-abuseipdb`). This matches the previous implementation's format for backward compatibility.
+State is stored in a single `state.db` file using [bbolt](https://github.com/etcd-io/bbolt), an embedded ACID key-value store. The database contains two buckets.
 
-### Daily Quota Counter
+### Daily Quota Counter (`quota` bucket)
 
-File: `daily`
-Format: `"<count> <YYYY-MM-DD>"` (e.g., `"42 2026-02-17"`)
+**Key:** `today` (constant)
+**Value:** JSON-encoded struct
 
-The date is checked on every quota operation. If the stored date differs from the current UTC date, the counter is reset to zero. Writes are atomic (write to `.tmp`, then `os.Rename`), preventing corruption from interrupted writes.
+```json
+{"count": 42, "date": "2026-02-17"}
+```
 
-### Per-IP Cooldown
+The date is checked inside every `QuotaConsume` transaction. If the stored date differs from the current UTC date, the counter is reset to zero before the check proceeds. The entire read-check-increment sequence runs in a single `bolt.Update` (serialised write transaction), making the operation atomic and race-free even with multiple concurrent workers.
 
-Directory: `cooldown/`
-Files: one per IP (e.g., `203_0_113_42`)
-Format: Unix timestamp of expiry (e.g., `"1739840130"`)
+### Per-IP Cooldown (`cooldown` bucket)
 
-IPv6 colons are replaced with underscores to avoid nested directory creation. CIDR suffixes are stripped before filename generation.
+**Key:** sanitised IP string (e.g. `203_0_113_42` for IPv4, `2001_db8__1` for IPv6 — colons and dots replaced with underscores)
+**Value:** big-endian int64 Unix timestamp of expiry (8 bytes)
 
-The `Allow()` method reads the file and compares the expiry timestamp to the current time. A missing file means no cooldown. A corrupt file (unparseable timestamp) is treated as no cooldown and will be overwritten on the next `Record()` call.
+`CooldownConsume(ip)` runs in a single `bolt.Update`:
+1. Read the stored expiry for `ip`
+2. If the current time is before expiry, return `(false, nil)` — cooldown active, do not report
+3. Otherwise, write the new expiry (`now + cooldownDuration`) and return `(true, nil)`
 
-`Prune()` scans the directory and deletes files whose expiry has passed. It is called every 200 processed decisions and on graceful shutdown.
+This atomic check-and-set eliminates the TOCTOU race present in the earlier separate `CooldownAllow()` + `CooldownRecord()` design, where two concurrent workers could both observe "no cooldown" and both proceed to report the same IP.
+
+### Cooldown Pruning (Janitor)
+
+`internal/bouncer/janitor.go` runs a background goroutine on a configurable tick (`JANITOR_INTERVAL`, default 5 minutes):
+
+1. **Prune:** `store.CooldownPrune()` deletes all cooldown entries whose expiry timestamp is in the past. This bounds the growth of `state.db` to the number of unique IPs seen within the cooldown window.
+2. **DB size metric:** `os.Stat(store.DBPath()).Size()` is written to the `cs_abuseipdb_bbolt_db_size_bytes` Prometheus gauge. This metric is useful for detecting unexpected growth (e.g. a misconfigured cooldown of 0 seconds generating millions of entries).
+
+The janitor exits cleanly when its context is cancelled (the same context as the bouncer's `Run` loop).
+
+### Why bbolt?
+
+- **No external dependencies** — the database is embedded in the binary; no Redis, no PostgreSQL, no external process to manage
+- **ACID guarantees** — crash-consistent; a power failure mid-write does not corrupt the database
+- **Single file** — trivial to back up, inspect, or copy (`cp state.db state.db.bak`)
+- **Sufficient performance** — bbolt serialises write transactions, but the AbuseIPDB HTTP call dominates latency by orders of magnitude; bbolt is never the bottleneck
 
 ---
 
@@ -256,20 +358,79 @@ Key decisions:
 
 ---
 
+## Supply-Chain Security
+
+### Cosign (Keyless OIDC Signing)
+
+Every release tag triggers a GitHub Actions workflow that signs the published Docker image using [Cosign](https://docs.sigstore.dev/cosign/overview/) in keyless mode. The signature is issued against the GitHub Actions OIDC token — no private key is stored anywhere.
+
+```yaml
+permissions:
+  id-token: write  # required for OIDC token issuance
+```
+
+Verification:
+
+```bash
+cosign verify developingchet/cs-abuseipdb-bouncer:<tag> \
+  --certificate-identity-regexp="https://github.com/developingchet/cs-abuseipdb-bouncer/.github/workflows/release.yml@refs/tags/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
+### CycloneDX SBOM
+
+The `anchore/sbom-action` step generates a CycloneDX JSON SBOM from the published image after it is pushed to Docker Hub. The SBOM is:
+
+1. Attached to the GitHub Release as `cs-abuseipdb-bouncer.sbom.cyclonedx.json`
+2. Embedded as a Cosign attestation on the Docker image (`cosign attest --type cyclonedx`)
+
+The SBOM lists every package present in the image, enabling downstream consumers to check for known CVEs in the exact packages shipped.
+
+### Trivy Scan
+
+Every release pipeline runs `aquasecurity/trivy-action` against the built image before pushing to Docker Hub. The step fails (and blocks publication) if any HIGH or CRITICAL CVEs are found in packages with available fixes.
+
+---
+
 ## Testing Strategy
 
 All packages have `_test.go` files with table-driven tests. External dependencies are mocked:
 
 - **AbuseIPDB API:** `httptest.NewServer` in `client_test.go` -- no real API calls in tests
 - **CrowdSec LAPI:** The `StreamBouncer` is not used in unit tests. `bouncer_test.go` calls `processDecision` directly with typed arguments
-- **Filesystem:** `t.TempDir()` provides isolated, automatically-cleaned directories for state tests
+- **Filesystem:** `t.TempDir()` provides isolated, automatically-cleaned directories for bbolt tests
+
+### Concurrency Tests
+
+`internal/storage/bbolt_concurrent_test.go` verifies the atomic store operations under real concurrent load:
+
+| Test | Scenario | Invariant |
+|------|----------|-----------|
+| `TestQuotaConsume_Concurrent` | 50 goroutines, limit=10 | Exactly 10 succeed |
+| `TestCooldownConsume_SameIP` | 20 goroutines, 1 IP | Exactly 1 succeeds |
+| `TestCooldownConsume_DifferentIPs` | 20 goroutines, 20 IPs | All 20 succeed |
+
+All tests are run with `-race` in CI.
+
+### Worker Pool Tests
+
+`internal/bouncer/pool_test.go` covers the end-to-end pool behaviour using an in-memory store and stub sinks:
+
+| Test | What it validates |
+|------|-------------------|
+| `TestWorkerPool_10kDecisions` | 10k decisions, 8 workers — no panic, deadlock, or race |
+| `TestWorkerPool_QuotaNotExceeded` | 100 decisions, limit=10 — sink receives ≤ 10 reports |
+| `TestWorkerPool_CooldownAtomicity` | 200 decisions for 1 IP — sink receives exactly 1 report |
+| `TestWorkerPool_Backpressure` | Buffer=10, flood 3× — drops observed, no deadlock |
+| `TestWorkerPool_GracefulShutdown` | Cancel mid-flight — `stop()` returns within 5s |
 
 ```bash
-# Run all tests
-go test ./...
+# Run all tests with race detector
+go test -race ./... -count=1 -timeout=120s
 
-# Race detector (recommended before any pull request)
-go test -race ./...
+# Targeted concurrency tests
+go test -race -count=5 ./internal/storage/... -run TestCooldownConsume_SameIP
+go test -race -count=5 ./internal/bouncer/... -run TestWorkerPool_CooldownAtomicity
 
 # Coverage
 go test -coverprofile=coverage.out ./...

@@ -41,6 +41,7 @@ LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.revision="${COMMIT}"
 LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.vendor="DevelopingChet"
+LABEL org.opencontainers.image.sbom="https://github.com/developingchet/cs-abuseipdb-bouncer/releases/download/${VERSION}/cs-abuseipdb-bouncer.sbom.cyclonedx.json"
 
 # CA certs for outbound HTTPS to LAPI and AbuseIPDB.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/

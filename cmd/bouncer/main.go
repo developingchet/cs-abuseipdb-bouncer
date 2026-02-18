@@ -16,6 +16,7 @@ import (
 
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/bouncer"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/config"
+	"github.com/developingchet/cs-abuseipdb-bouncer/internal/logger"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/metrics"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/sink"
 	abuseipdb "github.com/developingchet/cs-abuseipdb-bouncer/internal/sink/abuseipdb"
@@ -126,10 +127,11 @@ func buildSinks(cfg *config.Config) []sink.Sink {
 func initLogging(level string, format string) {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 
+	redacted := logger.NewRedactWriter(os.Stderr)
 	if format == "text" {
-		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: redacted})
 	} else {
-		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+		log.Logger = zerolog.New(redacted).With().Timestamp().Logger()
 	}
 
 	// go-cs-bouncer uses logrus internally. Silence it so its text-format lines

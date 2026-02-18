@@ -19,16 +19,16 @@ import (
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/storage"
 )
 
-const pruneEvery = 200 // Prune cooldown entries every N processed decisions.
-
 // Bouncer connects the CrowdSec LAPI to one or more sinks.
 type Bouncer struct {
-	cfg     *config.Config
-	sinks   []sink.Sink
-	filters []decision.Filter
-	store   storage.Store     // replaces *state.Quota + *state.Cooldown
-	stream  *csbouncer.StreamBouncer
-	httpSrv *http.Server      // nil when MetricsAddr == ""
+	cfg        *config.Config
+	sinks      []sink.Sink
+	filters    []decision.Filter // full pipeline used by processDecision (synchronous path / tests)
+	preFilters []decision.Filter // pre-queue pipeline used by Run (worker pool path, no quota/cooldown)
+	store      storage.Store     // bbolt-backed persistent state (daily quota + per-IP cooldown)
+	stream     *csbouncer.StreamBouncer
+	httpSrv    *http.Server // nil when MetricsAddr == ""
+	pool       *workerPool
 }
 
 // New creates a Bouncer and initialises all dependencies.
@@ -39,23 +39,21 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 		return nil, err
 	}
 
-	filters := buildFilters(cfg, store)
+	b := &Bouncer{
+		cfg:        cfg,
+		sinks:      sinks,
+		filters:    buildFilters(cfg, store),
+		preFilters: buildPreQueueFilters(cfg),
+		store:      store,
+	}
 
 	tlsSkipVerify := cfg.TLSSkipVerify
-	stream := &csbouncer.StreamBouncer{
+	b.stream = &csbouncer.StreamBouncer{
 		APIKey:             cfg.LAPIKey,
 		APIUrl:             cfg.LAPIURL,
 		TickerInterval:     cfg.PollInterval.String(),
 		UserAgent:          "cs-abuseipdb-bouncer/2.0",
 		InsecureSkipVerify: &tlsSkipVerify,
-	}
-
-	b := &Bouncer{
-		cfg:    cfg,
-		sinks:  sinks,
-		filters: filters,
-		store:  store,
-		stream: stream,
 	}
 
 	if cfg.MetricsAddr != "" {
@@ -85,7 +83,23 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 	return b, nil
 }
 
-// buildFilters constructs the ordered filter pipeline.
+// buildPreQueueFilters constructs the stateless pre-queue filter pipeline
+// (filters 1–7). Quota and cooldown checks are omitted here because they are
+// handled atomically inside the worker pool.
+func buildPreQueueFilters(cfg *config.Config) []decision.Filter {
+	return []decision.Filter{
+		decision.ActionFilter("add"),
+		decision.ScenarioExclude("impossible-travel", "impossible_travel"),
+		decision.OriginAllow("crowdsec", "cscli"),
+		decision.ScopeAllow("ip"),
+		decision.ValueRequired(),
+		decision.PrivateIPReject(),
+		decision.MinDurationFilter(cfg.MinDuration),
+	}
+}
+
+// buildFilters constructs the full ordered filter pipeline including quota and
+// cooldown checks. Kept for use by processDecision and existing unit tests.
 func buildFilters(cfg *config.Config, store storage.Store) []decision.Filter {
 	return []decision.Filter{
 		decision.ActionFilter("add"),
@@ -148,19 +162,27 @@ func (b *Bouncer) Run(ctx context.Context) error {
 		Bool("precheck", b.cfg.Precheck).
 		Str("min_duration", b.cfg.MinDuration.String()).
 		Str("log_level", b.cfg.LogLevel).
+		Int("workers", b.cfg.WorkerCount).
 		Msg("bouncer started")
+
+	// Start background janitor (cooldown pruning + DB size metric).
+	go runJanitor(ctx, b.store, b.cfg.JanitorInterval)
+
+	// Start worker pool for concurrent reporting.
+	b.pool = newWorkerPool(ctx, b.cfg.WorkerCount, b.cfg.WorkerBuffer, b.store, b.sinks)
 
 	go b.stream.Run(ctx)
 
-	processed := 0
 	for {
 		select {
 		case <-ctx.Done():
+			b.pool.stop()
 			log.Info().Msg("bouncer stopped")
 			return nil
 
 		case data, ok := <-b.stream.Stream:
 			if !ok {
+				b.pool.stop()
 				log.Info().Msg("lapi stream closed")
 				return nil
 			}
@@ -172,13 +194,37 @@ func (b *Bouncer) Run(ctx context.Context) error {
 				if d == nil {
 					continue
 				}
-				b.processDecision(ctx, d.Value, d.Origin, d.Scenario, d.Scope, d.Duration, "add")
-				processed++
-				if processed%pruneEvery == 0 {
-					if err := b.store.CooldownPrune(); err != nil {
-						log.Warn().Err(err).Msg("cooldown prune failed")
-					}
+				dec := &decision.Decision{
+					Action:   "add",
+					Origin:   ptrStr(d.Origin),
+					Scenario: ptrStr(d.Scenario),
+					Scope:    ptrStr(d.Scope),
+					Value:    ptrStr(d.Value),
+					Duration: ptrStr(d.Duration),
 				}
+
+				metrics.DecisionsProcessed.Inc()
+
+				log.Debug().
+					Str("ip", dec.Value).
+					Str("origin", dec.Origin).
+					Str("scenario", dec.Scenario).
+					Str("scope", dec.Scope).
+					Msg("decision received")
+
+				// Apply stateless pre-queue filters.
+				if reason := decision.Pipeline(b.preFilters, dec); reason != nil {
+					metrics.DecisionsSkipped.WithLabelValues(reason.Filter).Inc()
+					log.Debug().
+						Str("ip", dec.Value).
+						Str("filter", reason.Filter).
+						Str("detail", reason.Detail).
+						Msg("decision filtered (pre-queue)")
+					continue
+				}
+
+				// Enqueue for concurrent processing.
+				b.pool.submit(workerJob{d: dec})
 			}
 
 			for _, d := range data.Deleted {
@@ -222,8 +268,9 @@ func (b *Bouncer) Close() {
 	}
 }
 
-// processDecision runs a single decision through the filter pipeline and,
-// if it passes, reports it to all configured sinks.
+// processDecision runs a single decision through the full filter pipeline
+// (including quota/cooldown) and, if it passes, reports it to all configured
+// sinks. This synchronous path is retained for unit tests in bouncer_test.go.
 func (b *Bouncer) processDecision(
 	ctx context.Context,
 	value, origin, scenario, scope, duration *string,

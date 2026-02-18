@@ -6,7 +6,9 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write   # needed by softprops/action-gh-release to create releases
+  contents: write      # needed by softprops/action-gh-release to create releases
+  id-token: write      # OIDC token for keyless Cosign signing
+  attestations: write  # cosign attest
 
 jobs:
   # ── 1. Tests ────────────────────────────────────────────────────────────────
@@ -120,6 +122,9 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -132,6 +137,7 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
 
       - name: Build and push multi-arch image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -145,6 +151,33 @@ jobs:
             BUILD_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Generate SBOM (CycloneDX)
+        timeout-minutes: 10
+        uses: anchore/sbom-action@v0
+        with:
+          image: developingchet/cs-abuseipdb-bouncer@${{ steps.build.outputs.digest }}
+          format: cyclonedx-json
+          output-file: cs-abuseipdb-bouncer.sbom.cyclonedx.json
+
+      - name: Sign image with Cosign (keyless OIDC)
+        run: |
+          cosign sign --yes \
+            developingchet/cs-abuseipdb-bouncer@${{ steps.build.outputs.digest }}
+
+      - name: Attach SBOM attestation
+        run: |
+          cosign attest --yes \
+            --predicate cs-abuseipdb-bouncer.sbom.cyclonedx.json \
+            --type cyclonedx \
+            developingchet/cs-abuseipdb-bouncer@${{ steps.build.outputs.digest }}
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: cs-abuseipdb-bouncer.sbom.cyclonedx.json
+          if-no-files-found: error
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v4
@@ -168,6 +201,12 @@ jobs:
           path: dist/
           merge-multiple: true
 
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: dist/
+
       - name: Generate checksums
         working-directory: dist/
         run: sha256sum * > checksums.txt
@@ -186,9 +225,22 @@ jobs:
             Multi-arch image (linux/amd64, linux/arm64) published to Docker Hub.
             OCI labels embedded: `org.opencontainers.image.version`, `org.opencontainers.image.revision`, `org.opencontainers.image.created`.
 
+            ## Supply-chain verification
+
+            This image is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC):
+
+            ```bash
+            cosign verify developingchet/cs-abuseipdb-bouncer:${{ github.ref_name }} \
+              --certificate-identity-regexp="https://github.com/developingchet/cs-abuseipdb-bouncer/.github/workflows/release.yml@refs/tags/.*" \
+              --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+            ```
+
+            A CycloneDX SBOM is attached to this release and embedded as a Cosign attestation on the image.
+
             See [DOCKERHUB.md](https://github.com/developingchet/cs-abuseipdb-bouncer/blob/main/DOCKERHUB.md) for full usage documentation.
           files: |
             dist/cs-abuseipdb-bouncer-linux-amd64
             dist/cs-abuseipdb-bouncer-linux-arm64
             dist/cs-abuseipdb-bouncer-windows-amd64.exe
+            dist/cs-abuseipdb-bouncer.sbom.cyclonedx.json
             dist/checksums.txt

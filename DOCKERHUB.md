@@ -8,11 +8,13 @@ A production-ready, security-hardened CrowdSec bouncer that reports malicious IP
 
 | Feature | Detail |
 |---------|--------|
-| **ACID State** | Per-IP cooldown and daily quota are stored in a [bbolt](https://github.com/etcd-io/bbolt) embedded database (`state.db`). All reads and writes run inside serialised transactions — the state is crash-consistent and survives container restarts. |
-| **Prometheus Metrics** | Five metrics are exported on `GET /metrics` (port 9090 by default): decisions processed, reports sent, decisions skipped (by filter), API errors (by type), and daily quota remaining. Ready for Grafana / Alertmanager. |
-| **Distroless Security** | The runtime image is `gcr.io/distroless/static-debian12:nonroot`. No shell, no package manager, no libc. Runs as UID 65532 with zero Linux capabilities and a read-only filesystem. |
+| **Concurrent Worker Pool** | A configurable pool of goroutines sends reports to AbuseIPDB in parallel. High-frequency ban waves no longer stall the main event loop. Backpressure is handled via a bounded channel; overflow is counted in the `buffer-full` filter metric. |
+| **ACID State** | Per-IP cooldown and daily quota are stored in a [bbolt](https://github.com/etcd-io/bbolt) embedded database (`state.db`). Quota and cooldown checks execute as single atomic transactions — no TOCTOU races, crash-consistent, survives container restarts. |
+| **Prometheus Metrics** | Six metrics are exported on `GET /metrics` (port 9090 by default): decisions processed, reports sent, decisions skipped (by filter), API errors (by type), daily quota remaining, and `state.db` file size. Ready for Grafana / Alertmanager. |
+| **Distroless Security** | The runtime image is `gcr.io/distroless/static-debian12:nonroot`. No shell, no package manager, no libc. Runs as UID 65532 with zero Linux capabilities and a read-only filesystem. Seccomp syscall allowlist applied by default in the provided `docker-compose.yml`. |
+| **Supply-Chain Provenance** | Every release is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC — no stored private key) and accompanied by a CycloneDX SBOM attached as a Cosign attestation and a GitHub Release asset. |
 | **Multi-Architecture** | Pre-built images for `linux/amd64` and `linux/arm64` on Docker Hub. Static Go binary — no libc, no CGO. |
-| **Zero-Touch Releases** | Every version tag triggers a GitHub Actions pipeline: multi-arch Docker build → Trivy CVE scan (blocks on HIGH/CRITICAL) → Docker Hub push → GitHub Release with Linux/Windows binaries and SHA-256 checksums. |
+| **Zero-Touch Releases** | Every version tag triggers a GitHub Actions pipeline: tests (with `-race`) → Trivy CVE scan (blocks on HIGH/CRITICAL) → multi-arch Docker build → Cosign sign + SBOM → Docker Hub push → GitHub Release with binaries and SHA-256 checksums. |
 
 ---
 
@@ -79,6 +81,9 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | `json` | `json` (structured, for SIEM) or `text` (human-readable). |
 | `TLS_SKIP_VERIFY` | `false` | Skip TLS verification — only for self-signed LAPI certificates. |
+| `WORKER_COUNT` | `4` | Number of goroutines that concurrently send reports to AbuseIPDB (range: 1–64). |
+| `WORKER_BUFFER` | `256` | Size of the in-memory job queue between the event loop and workers (range: 1–10000). |
+| `JANITOR_INTERVAL` | `5m` | How often the background janitor prunes expired cooldown entries and updates the DB size metric (minimum: 30s). |
 
 ---
 
@@ -101,6 +106,7 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `cs_abuseipdb_decisions_skipped_total` | Counter | `filter` | Decisions dropped by each filter stage |
 | `cs_abuseipdb_api_errors_total` | Counter | `type` | API errors by type: `rate_limit`, `auth`, `network`, `timeout` |
 | `cs_abuseipdb_quota_remaining` | Gauge | — | Remaining daily report quota (resets at UTC midnight) |
+| `cs_abuseipdb_bbolt_db_size_bytes` | Gauge | — | Size of `state.db` in bytes, updated by the janitor |
 
 Scrape example:
 ```bash
@@ -109,43 +115,41 @@ curl http://localhost:9090/metrics | grep cs_abuseipdb
 
 ---
 
-## Security Best Practices
+## Security
 
 ### Distroless Runtime
 
 The container image is built `FROM gcr.io/distroless/static-debian12:nonroot`. This means:
 
-- **No shell** — eliminates RCE via shell injection; exploits that rely on `/bin/sh` are dead-ends
+- **No shell** — eliminates RCE via shell injection
 - **No package manager** — no `apt`, `apk`, or `pip` to install tools post-compromise
-- **Minimal CVE surface** — only the Go binary and CA certificates; no libc, no OS utilities
+- **Minimal CVE surface** — only the Go binary and CA certificates
 
-### Read-Only Filesystem
+### Seccomp Profile
 
-`read_only: true` in your compose file locks down the container filesystem. The bouncer only writes to two locations:
-
-- `/data` — the named Docker volume (bbolt `state.db`)
-- `/tmp` — tmpfs mount required by the Go runtime
-
-Everything else is immutable at runtime.
-
-### Zero Capabilities
-
-`cap_drop: ALL` removes every Linux capability. The bouncer needs none — it makes outbound HTTPS connections and reads from environment variables. No raw sockets, no filesystem mounting, no process manipulation.
-
-### Non-Root User
-
-The image runs as UID **65532** (`nonroot` in distroless convention). Even if a vulnerability were exploited, there is no path to privilege escalation — the user has no sudo access, no shell, and no capabilities.
-
-### State Volume Placement
-
-Always mount `DATA_DIR` as a named Docker volume:
+The repository ships `security/seccomp-bouncer.json`, a minimal OCI seccomp profile that allows only the syscalls the binary actually needs. Apply it in your compose file:
 
 ```yaml
-volumes:
-  - bouncer-state:/data
+security_opt:
+  - no-new-privileges:true
+  - "seccomp:./security/seccomp-bouncer.json"
 ```
 
-Never use `DATA_DIR=/tmp` or store `state.db` on ephemeral container storage. The database holds your daily quota count and per-IP cooldown records — losing it means the bouncer starts a fresh quota count (harmless at midnight UTC, but undesirable mid-day) and re-enters cooldown tracking from scratch (allows re-reporting within the 15-minute deduplication window).
+### Log Redaction
+
+API keys and Bearer tokens are automatically redacted from all log output before they reach stderr. The regex patterns match 80-character hex strings (AbuseIPDB / CrowdSec key format) and `Bearer <token>` values.
+
+### Supply-Chain Verification
+
+Verify the image signature with Cosign:
+
+```bash
+cosign verify developingchet/cs-abuseipdb-bouncer:latest \
+  --certificate-identity-regexp="https://github.com/developingchet/cs-abuseipdb-bouncer/.github/workflows/release.yml@refs/tags/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
+A CycloneDX SBOM is available as a GitHub Release asset and embedded as a Cosign attestation on the image.
 
 ---
 

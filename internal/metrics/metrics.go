@@ -36,6 +36,13 @@ var (
 		Name: "cs_abuseipdb_quota_remaining",
 		Help: "AbuseIPDB reports remaining in today's quota (UTC).",
 	})
+
+	// BboltDBSizeBytes is a gauge of the state.db file size in bytes,
+	// updated by the janitor on each tick.
+	BboltDBSizeBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "cs_abuseipdb_bbolt_db_size_bytes",
+		Help: "Size of state.db in bytes, updated by the janitor.",
+	})
 )
 
 // Register registers all metrics with prometheus.DefaultRegisterer.
@@ -53,5 +60,6 @@ func RegisterWith(reg prometheus.Registerer) {
 		DecisionsSkipped,
 		APIErrors,
 		QuotaRemaining,
+		BboltDBSizeBytes,
 	)
 }

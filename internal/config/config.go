@@ -30,9 +30,14 @@ type Config struct {
 	LogFormat        string        `koanf:"log_format"`
 	PollInterval     time.Duration `koanf:"poll_interval"`
 	CooldownDuration time.Duration `koanf:"cooldown_duration"`
-	DataDir          string        `koanf:"data_dir"`     // was STATE_DIR/StateDir
-	MetricsAddr      string        `koanf:"metrics_addr"` // NEW: "" = disabled
+	DataDir          string        `koanf:"data_dir"`     // falls back to STATE_DIR for legacy compatibility
+	MetricsAddr      string        `koanf:"metrics_addr"` // "" = disabled
 	TLSSkipVerify    bool          `koanf:"tls_skip_verify"`
+
+	// Concurrency
+	WorkerCount     int           `koanf:"worker_count"`
+	WorkerBuffer    int           `koanf:"worker_buffer"`
+	JanitorInterval time.Duration `koanf:"janitor_interval"`
 }
 
 // defaults is the lowest-priority layer.
@@ -49,6 +54,9 @@ var defaults = map[string]any{
 	"data_dir":              "/data",
 	"metrics_addr":          ":9090",
 	"tls_skip_verify":       false,
+	"worker_count":          4,
+	"worker_buffer":         256,
+	"janitor_interval":      5 * time.Minute,
 }
 
 // Load reads configuration from (lowest → highest priority):
@@ -73,7 +81,7 @@ func Load() (*Config, error) {
 	// Layer 3: environment variables.
 	// Transform: "CROWDSEC_LAPI_URL" → "crowdsec_lapi_url".
 	// ABUSEIPDB_MIN_DURATION is intentionally skipped here and handled below
-	// for v1 backwards-compatibility (v1 used plain integers for seconds).
+	// to support both Go duration strings ("5m") and plain integer seconds ("300").
 	if err := k.Load(env.Provider("", ".", func(s string) string {
 		if s == "ABUSEIPDB_MIN_DURATION" {
 			return "" // skip; handled manually below
@@ -93,7 +101,7 @@ func Load() (*Config, error) {
 	cfg.LogFormat = strings.TrimSpace(strings.ToLower(cfg.LogFormat))
 
 	// ABUSEIPDB_MIN_DURATION: accept both Go duration strings ("5m") and
-	// plain integer seconds ("300") for v1 backwards-compatibility.
+	// plain integer seconds ("300") for backwards-compatibility.
 	if raw := strings.TrimSpace(os.Getenv("ABUSEIPDB_MIN_DURATION")); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil {
 			cfg.MinDuration = d
@@ -105,7 +113,7 @@ func Load() (*Config, error) {
 		}
 	}
 
-	// v1 compat: honour STATE_DIR if DATA_DIR is not explicitly set.
+	// Legacy compat: honour STATE_DIR if DATA_DIR is not explicitly set.
 	if os.Getenv("DATA_DIR") == "" && os.Getenv("STATE_DIR") != "" {
 		cfg.DataDir = os.Getenv("STATE_DIR")
 	}
@@ -145,6 +153,16 @@ func (c *Config) validate() error {
 	}
 	if strings.ContainsRune(c.DataDir, 0) {
 		errs = append(errs, "DATA_DIR must not contain null bytes")
+	}
+
+	if c.WorkerCount < 1 || c.WorkerCount > 64 {
+		errs = append(errs, "WORKER_COUNT must be between 1 and 64")
+	}
+	if c.WorkerBuffer < 1 || c.WorkerBuffer > 10000 {
+		errs = append(errs, "WORKER_BUFFER must be between 1 and 10000")
+	}
+	if c.JanitorInterval < 30*time.Second {
+		errs = append(errs, "JANITOR_INTERVAL must be at least 30s")
 	}
 
 	if len(errs) > 0 {

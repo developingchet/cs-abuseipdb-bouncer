@@ -1,16 +1,25 @@
 # Configuration Reference
 
-Complete reference for all configuration options in the CrowdSec AbuseIPDB Bouncer.
+Complete reference for all configuration options in the CrowdSec AbuseIPDB Bouncer v2.0.
 
 ## Table of Contents
 
 - [Environment Variables](#environment-variables)
+  - [Required](#required-variables)
+  - [Optional — AbuseIPDB](#optional--abuseipdb)
+  - [Optional — Storage & Metrics](#optional--storage--metrics)
+  - [Optional — Networking & Logging](#optional--networking--logging)
+  - [Optional — Concurrency](#optional--concurrency)
 - [Scenario Category Mapping](#scenario-category-mapping)
 - [Advanced Configuration](#advanced-configuration)
 
+---
+
 ## Environment Variables
 
-All configuration is via environment variables. No configuration files are needed -- set these in `.env` or pass them directly in the container's `environment` block.
+All configuration is via environment variables (or an optional YAML file set by `CONFIG_FILE`). Set these in `.env` or pass them directly in the container's `environment` block.
+
+---
 
 ### Required Variables
 
@@ -36,17 +45,19 @@ The bouncer API key used to authenticate with the LAPI.
 docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 ```
 
-The key is only shown once. Copy it immediately. This key grants read access to all CrowdSec decisions -- treat it as a credential.
+The key is shown only once — copy it immediately. This key grants read access to all CrowdSec decisions; treat it as a credential. The value is automatically redacted from log output by the built-in `RedactWriter`.
 
 #### ABUSEIPDB_API_KEY
 
 **Type:** String
 **Required:** Yes
-**Format:** 80-character alphanumeric v2 API key
+**Format:** 80-character hex v2 API key
 
 The AbuseIPDB v2 API key for the `/report` and `/check` endpoints.
 
 **Obtain:** https://www.abuseipdb.com/account/api
+
+The value is automatically redacted from log output by the built-in `RedactWriter`.
 
 **Subscription tiers:**
 
@@ -56,127 +67,211 @@ The AbuseIPDB v2 API key for the `/report` and `/check` endpoints.
 | Webmaster | 3000 | 3000 |
 | Premium | 50000 | 50000 |
 
-### Optional Variables
+---
+
+### Optional — AbuseIPDB
 
 #### ABUSEIPDB_DAILY_LIMIT
 
 **Type:** Integer
-**Default:** 1000
-**Range:** 1-50000
+**Default:** `1000`
+**Range:** 1–50000
 
 Maximum reports to send per UTC calendar day. The counter resets at 00:00:00 UTC automatically.
 
-Once the limit is reached, all subsequent decisions are dropped with a `warn` log and the daily count is preserved to disk. No reports are sent until the counter resets.
-
-Set this to match your AbuseIPDB subscription tier. Setting it slightly below the hard limit (e.g., 950 instead of 1000) leaves headroom for manual API calls.
+Once the limit is reached, all subsequent decisions are dropped with a `quota` skip reason. No reports are sent until the counter resets. Set this to match your AbuseIPDB subscription tier.
 
 #### ABUSEIPDB_PRECHECK
 
 **Type:** Boolean
-**Default:** false
-**Options:** true, false, 1, 0, yes, no
+**Default:** `false`
+**Options:** `true`, `false`, `1`, `0`, `yes`, `no`
 
-When true, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped.
+When `true`, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped.
 
 **Trade-offs:**
 - Prevents wasting report quota on whitelisted IPs (CDNs, search engines, trusted infrastructure)
 - Each precheck consumes one `/check` API call from the same daily quota
-- Adds approximately 100-300ms latency per decision (one additional round trip)
+- Adds approximately 100–300 ms latency per decision (one additional round trip)
 
 Recommended for Webmaster and Premium tiers where check quota is less constrained.
 
 #### ABUSEIPDB_MIN_DURATION
 
-**Type:** Integer (seconds)
-**Default:** 0
+**Type:** Duration string (`"5m"`, `"1h"`) or plain integer (seconds, e.g. `300`)
+**Default:** `0` (disabled)
 
-Skip decisions shorter than this many seconds. The decision's `duration` field (Go duration format: "72h30m15s") is parsed and compared.
-
-Set to 0 to disable and report all decisions regardless of duration.
+Skip decisions shorter than this duration. The decision's `duration` field is parsed and compared before enqueueing.
 
 | Value | Effect |
 |-------|--------|
-| 0 | Disabled -- report all decisions |
-| 300 | Skip bans shorter than 5 minutes (typical test decisions) |
-| 3600 | Report only bans of 1 hour or longer |
-| 86400 | Report only bans of 24 hours or longer |
+| `0` | Disabled — report all decisions regardless of duration |
+| `300` or `5m` | Skip bans shorter than 5 minutes (typical test decisions) |
+| `3600` or `1h` | Report only bans of 1 hour or longer |
+| `86400` or `24h` | Report only bans of 24 hours or longer |
+
+---
+
+### Optional — Storage & Metrics
+
+#### DATA_DIR
+
+**Type:** String (path)
+**Default:** `/data`
+
+Directory where `state.db` (the bbolt embedded database) is stored. The directory must be writable by the container user (UID 65532).
+
+**Always mount a named Docker volume here:**
+
+```yaml
+volumes:
+  - bouncer-state:/data
+```
+
+Using ephemeral container storage means the daily quota counter and per-IP cooldowns reset on every restart. A mid-day restart would start a fresh quota count, which can lead to over-reporting if the previous count was close to the limit.
+
+The bouncer also accepts the legacy `STATE_DIR` environment variable if `DATA_DIR` is not set, for backwards-compatibility with v1.x deployments.
+
+#### METRICS_ADDR
+
+**Type:** String (host:port)
+**Default:** `:9090`
+
+Address on which the built-in HTTP server listens for Prometheus metrics and Kubernetes health probes.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /metrics` | Prometheus metrics in text exposition format |
+| `GET /healthz` | Liveness probe — `ok` (HTTP 200) when the process is running |
+| `GET /readyz` | Readiness probe — HTTP 200 when connected to LAPI, 503 otherwise |
+
+Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no port is opened).
+
+**Security note:** Bind to `127.0.0.1:9090` or a private network interface if the metrics endpoint should not be reachable from outside the host.
+
+#### CONFIG_FILE
+
+**Type:** String (path)
+**Default:** _(none)_
+
+Optional path to a YAML configuration file. Values in the file are overridden by environment variables. Useful for managing configuration in version control without duplicating all env vars.
+
+**Example `config.yaml`:**
+```yaml
+abuseipdb_daily_limit: 3000
+cooldown_duration: 15m
+worker_count: 8
+log_level: info
+```
+
+---
+
+### Optional — Networking & Logging
 
 #### COOLDOWN_DURATION
 
 **Type:** Duration string
-**Default:** 15m
-**Minimum:** 1m
+**Default:** `15m`
+**Minimum:** `1m`
 **Examples:** `15m`, `30m`, `1h`
 
-Per-IP suppression window. After a report is sent for an IP, subsequent decisions for that IP are dropped until this window expires.
+Per-IP suppression window. After a report is sent for an IP, subsequent decisions for that IP are silently dropped until this window expires.
 
-The default matches AbuseIPDB's server-side deduplication window (15 minutes). Reports within that window return HTTP 422 and consume quota without effect.
+The default matches AbuseIPDB's server-side deduplication window (15 minutes). Reports within that window return HTTP 422 and consume quota without effect. Cooldown state is stored atomically in bbolt (`CooldownConsume` is a single serialised transaction) — concurrent workers cannot double-report the same IP.
 
-Increasing this value reduces duplicate reports but also delays legitimate re-reporting when an IP resumes attacks after a quiet period.
+Expired entries are pruned from `state.db` by the background janitor (see `JANITOR_INTERVAL`).
 
 #### POLL_INTERVAL
 
 **Type:** Duration string
-**Default:** 30s
-**Minimum:** 10s
+**Default:** `30s`
+**Minimum:** `10s`
 
-How often the bouncer polls the LAPI for new decisions.
-
-Lower values reduce the time between detection and reporting, at the cost of higher LAPI load. Values below 10s are rejected at startup. 30s is appropriate for most deployments.
+How often the bouncer polls the LAPI for new decisions. Values below 10 s are rejected at startup. 30 s is appropriate for most deployments.
 
 #### LOG_LEVEL
 
 **Type:** String
-**Default:** info
-**Options:** trace, debug, info, warn, error
+**Default:** `info`
+**Options:** `trace`, `debug`, `info`, `warn`, `error`
 
 Controls log verbosity.
 
 | Level | Logged events |
 |-------|--------------|
-| error | Fatal errors only |
-| warn | Errors + warnings (rate limits, retries) |
-| info | Warnings + startup banner, successful reports |
-| debug | Info + every decision received and filtered |
-| trace | Debug + internal state (not recommended in production) |
-
-Debug mode logs every decision including filtered ones, which is useful when investigating why certain IPs are not being reported.
+| `error` | Fatal errors only |
+| `warn` | Errors + warnings (rate limits, retries) |
+| `info` | Warnings + startup banner, successful reports |
+| `debug` | Info + every decision received and filtered |
+| `trace` | Debug + internal state (not recommended in production) |
 
 #### LOG_FORMAT
 
 **Type:** String
-**Default:** json
-**Options:** json, text
+**Default:** `json`
+**Options:** `json`, `text`
 
 Output format for log messages.
 
 `json` produces structured key-value output compatible with Loki, Splunk, Elasticsearch, and similar tools:
 ```json
-{"time":1739836530,"level":"info","ip":"203.0.113.42","daily":15,"limit":1000,"msg":"reported"}
+{"time":1739836530,"level":"info","ip":"203.0.113.42","sink":"abuseipdb","daily":15,"limit":1000,"msg":"reported"}
 ```
 
 `text` produces human-readable output suitable for direct inspection:
 ```
-12:15:30 INF reported ip=203.0.113.42 daily=15 limit=1000
+12:15:30 INF reported ip=203.0.113.42 sink=abuseipdb daily=15 limit=1000
 ```
+
+In both formats, API keys and Bearer tokens are automatically redacted from all log lines by the built-in `RedactWriter`.
 
 #### TLS_SKIP_VERIFY
 
 **Type:** Boolean
-**Default:** false
+**Default:** `false`
 
-When true, the bouncer skips TLS certificate verification when connecting to the LAPI. This is required when the LAPI uses a self-signed certificate that is not in the container's CA bundle.
+When `true`, the bouncer skips TLS certificate verification when connecting to the LAPI. Required only when the LAPI uses a self-signed certificate not present in the container's CA bundle.
 
-Do not enable this in production unless your LAPI is on a trusted network and certificate verification is not feasible. Enabling it removes protection against man-in-the-middle attacks on the LAPI connection.
+Do not enable this in production unless your LAPI is on a trusted private network. Enabling it removes protection against man-in-the-middle attacks on the LAPI connection.
 
-#### STATE_DIR
+---
 
-**Type:** String
-**Default:** /tmp/cs-abuseipdb
+### Optional — Concurrency
 
-Directory where per-IP cooldown files and the daily quota counter are stored. The directory must be writable by the container user (UID 65532).
+These settings control the worker pool introduced in v2.0. All have sensible defaults and require no changes for existing deployments.
 
-In production, mount a named Docker volume at this path so state persists across container restarts. Using an in-memory tmpfs means the daily counter and cooldowns reset on every restart, which can lead to quota overruns.
+#### WORKER_COUNT
+
+**Type:** Integer
+**Default:** `4`
+**Range:** 1–64
+
+Number of goroutines that concurrently send reports to AbuseIPDB. Each worker handles one HTTP round-trip (up to ~15 s with retries) independently, so multiple ban decisions are dispatched in parallel rather than sequentially.
+
+Increasing this value helps during high-frequency ban waves (e.g. a DDoS generating hundreds of decisions per minute). For most deployments, the default of 4 is sufficient — AbuseIPDB API latency, not throughput, is the limiting factor.
+
+#### WORKER_BUFFER
+
+**Type:** Integer
+**Default:** `256`
+**Range:** 1–10000
+
+Size of the in-memory job queue between the event loop and the worker pool. If new decisions arrive faster than workers can dispatch them, the queue absorbs the burst. When the queue is full, excess decisions are dropped immediately and counted in the `cs_abuseipdb_decisions_skipped_total{filter="buffer-full"}` metric.
+
+Increase this value if you observe frequent `buffer-full` drops during burst traffic and cannot increase `WORKER_COUNT` further (e.g. due to AbuseIPDB rate limits).
+
+#### JANITOR_INTERVAL
+
+**Type:** Duration string
+**Default:** `5m`
+**Minimum:** `30s`
+
+How often the background janitor goroutine runs. On each tick the janitor:
+
+1. Calls `CooldownPrune()` to delete expired cooldown entries from `state.db`, bounding database growth
+2. Updates the `cs_abuseipdb_bbolt_db_size_bytes` Prometheus gauge with the current file size
+
+Values below 30 s are rejected at startup. The default of 5 minutes is appropriate for all deployments.
 
 ---
 
@@ -186,7 +281,7 @@ CrowdSec scenario names are mapped to AbuseIPDB category IDs using ordered subst
 
 **Matching logic:**
 1. Lowercase the full scenario name
-2. Strip the author prefix: `crowdsecurity/ssh-bf` becomes `ssh-bf`
+2. Strip the author prefix: `crowdsecurity/ssh-bf` → `ssh-bf`
 3. Test each pattern in priority order
 4. The first match wins
 5. If no pattern matches, category 15 (Hacking) is used as the fallback
@@ -226,12 +321,12 @@ CrowdSec scenario names are mapped to AbuseIPDB category IDs using ordered subst
 
 **Ordering rationale for non-obvious priorities:**
 - `ping`/`icmp` (6) precedes `flood`/`ddos` (7) so that `ping-flood` matches Ping of Death rather than DDoS Attack.
-- Specific scanner tools `nmap`/`masscan`/`zmap`/`iptables` (10) precede generic `scan` (14) so that `iptables-scan-multi_ports` maps only to Port Scan rather than Port Scan + Web App Attack.
+- Specific scanner tools `nmap`/`masscan`/`zmap`/`iptables` (10) precede generic `scan` (14) so that `iptables-scan-multi_ports` maps only to Port Scan.
 - `traversal`/`rce`/`exploit` (12) precede `probing`/`scan` (14) so that `path-traversal-probing` matches Exploited Host rather than Port Scan.
 - `http-spam`/`web-spam` (17) precede `http`/`web` (26) so that `http-spam` matches Web Spam rather than Web App Attack.
 - `http`/`nginx`/`apache` (26) precede `brute`/`-bf` (27) so that `nginx-bf` matches Web App Attack rather than Brute-Force.
 
-Note: Pattern matching uses substring search (`strings.Contains`), not anchored matching. A scenario containing `ssh` anywhere will match priority 1 before priority 27 (`brute`, `-bf`). This is why SSH scenarios correctly receive categories 22 and 18 rather than just 18.
+Note: Pattern matching uses substring search (`strings.Contains`), not anchored matching. A scenario containing `ssh` anywhere will match priority 1 before priority 27 (`brute`, `-bf`).
 
 ### AbuseIPDB Category Reference
 
@@ -268,6 +363,31 @@ Category 2 (DNS Poisoning) is defined but not emitted by any current pattern. Th
 ---
 
 ## Advanced Configuration
+
+### Applying the Seccomp Profile
+
+The repository ships `security/seccomp-bouncer.json`, a minimal OCI seccomp allowlist that blocks all syscalls not required by the bouncer binary.
+
+**docker-compose.yml:**
+```yaml
+security_opt:
+  - no-new-privileges:true
+  - "seccomp:./security/seccomp-bouncer.json"
+```
+
+**docker run:**
+```bash
+docker run \
+  --security-opt no-new-privileges \
+  --security-opt "seccomp=$(pwd)/security/seccomp-bouncer.json" \
+  --env-file .env \
+  --volume bouncer-state:/data \
+  --read-only \
+  --cap-drop ALL \
+  developingchet/cs-abuseipdb-bouncer:latest
+```
+
+The seccomp profile is supported on all modern Linux kernels (4.8+). Docker on macOS and Windows does not apply Linux seccomp profiles (they are silently ignored on non-Linux hosts).
 
 ### Docker Network Isolation
 
@@ -325,15 +445,12 @@ sourcetype = _json
 ### Running Tests
 
 ```bash
-# All unit tests
-go test ./...
-
-# With race detector (recommended before pull requests)
-go test -race ./...
+# All unit tests with race detector (recommended before any pull request)
+go test -race ./... -count=1 -timeout=120s
 
 # Coverage report
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-Tests run without Docker or a live LAPI -- all external dependencies are mocked with `httptest.NewServer`.
+Tests run without Docker or a live LAPI — all external dependencies are mocked with `httptest.NewServer`.

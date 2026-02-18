@@ -8,12 +8,23 @@ type Store interface {
 	QuotaAllow() bool
 	QuotaCount() int
 	QuotaLimit() int
-	QuotaRemaining() int  // limit - count, clamped to zero
+	QuotaRemaining() int // limit - count, clamped to zero
 	QuotaRecord() error
+
+	// QuotaConsume atomically checks and consumes one quota unit in a single
+	// bolt.Update. Returns (true, nil) if allowed, (false, nil) if exhausted.
+	QuotaConsume() (bool, error)
 
 	CooldownAllow(ip string) bool
 	CooldownRecord(ip string) error
 	CooldownPrune() error
+
+	// CooldownConsume atomically checks and sets the cooldown for ip in a
+	// single bolt.Update. Returns (true, nil) if allowed, (false, nil) if active.
+	CooldownConsume(ip string) (bool, error)
+
+	// DBPath returns the filesystem path of the database file ("" for in-memory).
+	DBPath() string
 
 	Close() error
 }

@@ -174,5 +174,54 @@ func (s *BoltStore) CooldownPrune() error {
 	})
 }
 
+// QuotaConsume atomically checks and consumes one quota unit in a single
+// bolt.Update. Returns (true, nil) if allowed, (false, nil) if exhausted.
+func (s *BoltStore) QuotaConsume() (bool, error) {
+	today := utcDateString()
+	allowed := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketQuota)
+		rec := decodeQuota(b.Get(keyToday))
+		if rec.Date != today {
+			rec = quotaRecord{Count: 0, Date: today}
+		}
+		if rec.Count >= s.limit {
+			return nil
+		}
+		rec.Count++
+		allowed = true
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		return b.Put(keyToday, data)
+	})
+	return allowed, err
+}
+
+// CooldownConsume atomically checks and sets the cooldown for ip in a
+// single bolt.Update. Returns (true, nil) if allowed, (false, nil) if active.
+func (s *BoltStore) CooldownConsume(ip string) (bool, error) {
+	key := []byte(sanitizeIP(ip))
+	now := time.Now()
+	allowed := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketCooldown)
+		if data := b.Get(key); len(data) >= 8 {
+			if now.Unix() < int64(binary.BigEndian.Uint64(data)) {
+				return nil
+			}
+		}
+		allowed = true
+		val := make([]byte, 8)
+		binary.BigEndian.PutUint64(val, uint64(now.Add(s.cooldown).Unix()))
+		return b.Put(key, val)
+	})
+	return allowed, err
+}
+
+// DBPath returns the filesystem path of the database file.
+func (s *BoltStore) DBPath() string { return s.db.Path() }
+
 // Close cleanly closes the underlying bbolt database.
 func (s *BoltStore) Close() error { return s.db.Close() }

@@ -220,7 +220,7 @@ docker logs abuseipdb-bouncer
 Expected startup log:
 
 ```json
-{"time":1739836200,"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","msg":"bouncer started"}
+{"time":1739836200,"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","workers":4,"msg":"bouncer started"}
 ```
 
 **Verify the bouncer is pulling from LAPI:**

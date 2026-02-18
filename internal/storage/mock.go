@@ -106,5 +106,37 @@ func (m *MemStore) CooldownPrune() error {
 	return nil
 }
 
+// QuotaConsume atomically checks and consumes one quota unit.
+// Returns (true, nil) if allowed, (false, nil) if exhausted.
+func (m *MemStore) QuotaConsume() (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshDate()
+	if m.quotaCount >= m.limit {
+		return false, nil
+	}
+	m.quotaCount++
+	return true, nil
+}
+
+// CooldownConsume atomically checks and sets the cooldown for ip.
+// Returns (true, nil) if allowed, (false, nil) if active.
+func (m *MemStore) CooldownConsume(ip string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := sanitizeIP(ip)
+	now := time.Now()
+	if expiry, ok := m.cooldowns[key]; ok {
+		if now.Unix() < expiry {
+			return false, nil
+		}
+	}
+	m.cooldowns[key] = now.Add(m.cooldownDur).Unix()
+	return true, nil
+}
+
+// DBPath returns "" because MemStore is in-memory.
+func (m *MemStore) DBPath() string { return "" }
+
 // Close is a no-op for the in-memory store.
 func (m *MemStore) Close() error { return nil }

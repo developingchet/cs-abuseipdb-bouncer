@@ -1,6 +1,7 @@
 package abuseipdb
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -18,6 +20,12 @@ import (
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/metrics"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/sink"
 )
+
+// respBufPool reuses response body buffers across concurrent requests to
+// reduce GC pressure from short-lived HTTP responses.
+var respBufPool = sync.Pool{
+	New: func() any { return bytes.NewBuffer(make([]byte, 0, 4096)) },
+}
 
 const (
 	defaultReportURL = "https://api.abuseipdb.com/api/v2/report"
@@ -218,7 +226,12 @@ func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	buf := respBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer respBufPool.Put(buf)
+	_, _ = io.Copy(buf, io.LimitReader(resp.Body, 4096))
+	body := make([]byte, buf.Len())
+	copy(body, buf.Bytes())
 	return resp.StatusCode, body, nil
 }
 
@@ -241,7 +254,12 @@ func (c *Client) checkWhitelisted(ctx context.Context, ip string) (bool, error) 
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	buf := respBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer respBufPool.Put(buf)
+	_, _ = io.Copy(buf, io.LimitReader(resp.Body, 4096))
+	body := make([]byte, buf.Len())
+	copy(body, buf.Bytes())
 
 	var result struct {
 		Data struct {
