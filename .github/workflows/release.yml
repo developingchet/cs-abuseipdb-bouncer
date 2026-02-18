@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write   # needed by softprops/action-gh-release to create releases
+
+jobs:
+  # ── 1. Tests ────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test -race ./... -count=1 -timeout=120s
+
+  # ── 2. Binary builds (matrix) ───────────────────────────────────────────────
+  build-binaries:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: cs-abuseipdb-bouncer-linux-amd64
+          - goos: linux
+            goarch: arm64
+            artifact: cs-abuseipdb-bouncer-linux-arm64
+          - goos: windows
+            goarch: amd64
+            artifact: cs-abuseipdb-bouncer-windows-amd64.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          go build \
+            -ldflags="-s -w \
+              -X main.version=${{ github.ref_name }} \
+              -X main.commit=${{ github.sha }} \
+              -X main.date=${BUILD_DATE}" \
+            -trimpath \
+            -o "${{ matrix.artifact }}" \
+            ./cmd/bouncer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  # ── 3. Docker security scan ─────────────────────────────────────────────────
+  docker-scan:
+    name: Docker Scan
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image for scanning (linux/amd64 only)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: local:scan
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: local:scan
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+  # ── 4. Multi-arch Docker push ────────────────────────────────────────────────
+  docker-push:
+    name: Docker Push
+    runs-on: ubuntu-latest
+    needs: [test, docker-scan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: developingchet/cs-abuseipdb-bouncer
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 5. GitHub Release ────────────────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-binaries, docker-push]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist/
+        run: sha256sum * > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Docker
+
+            ```bash
+            docker pull developingchet/cs-abuseipdb-bouncer:${{ github.ref_name }}
+            ```
+
+            Multi-arch image (linux/amd64, linux/arm64) published to Docker Hub.
+            OCI labels embedded: `org.opencontainers.image.version`, `org.opencontainers.image.revision`, `org.opencontainers.image.created`.
+
+            See [DOCKERHUB.md](https://github.com/developingchet/cs-abuseipdb-bouncer/blob/main/DOCKERHUB.md) for full usage documentation.
+          files: |
+            dist/cs-abuseipdb-bouncer-linux-amd64
+            dist/cs-abuseipdb-bouncer-linux-arm64
+            dist/cs-abuseipdb-bouncer-windows-amd64.exe
+            dist/checksums.txt

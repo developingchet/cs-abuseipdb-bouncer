@@ -5,7 +5,6 @@ Complete installation procedures for the CrowdSec AbuseIPDB Bouncer.
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
-- [Installation Methods](#installation-methods)
 - [Step-by-Step Installation](#step-by-step-installation)
 - [Post-Installation Verification](#post-installation-verification)
 - [Integration Examples](#integration-examples)
@@ -18,7 +17,7 @@ Complete installation procedures for the CrowdSec AbuseIPDB Bouncer.
 - **Docker Compose** - v2.0 or higher (included with modern Docker installations)
 - **Operating System** - Linux (tested on Ubuntu 22.04, Debian 11/12, CentOS Stream 9)
 - **Network Access** - Outbound HTTPS (port 443) to api.abuseipdb.com
-- **Storage** - Minimum 100MB for Docker image and state
+- **Storage** - Minimum 50MB for Docker image and state volume
 
 ### CrowdSec Requirements
 
@@ -51,38 +50,22 @@ curl -G https://api.abuseipdb.com/api/v2/check \
 
 Expected response includes `"data":{"ipAddress":"127.0.0.1",...}`.
 
-## Installation Methods
-
-### Method 1: Docker Compose (Recommended)
-
-Best for:
-- Running alongside an existing Docker-based CrowdSec deployment
-- Easy integration with other containers on the same Docker network
-- Automatic restarts and healthchecks
-
-### Method 2: Standalone Docker Container
-
-Best for:
-- Minimal installations
-- Remote CrowdSec LAPI (not on the same host)
-- Custom orchestration tools
-
-This guide covers Method 1. For Method 2, see the standalone example at the end.
+---
 
 ## Step-by-Step Installation
 
 ### 1. Register the Bouncer with CrowdSec
 
-The bouncer requires an API key to authenticate with the CrowdSec LAPI.
+The bouncer authenticates to the LAPI with a per-bouncer API key.
 
 ```bash
-docker exec crowdsec cscli bouncers add abuseipdb-reporter
+docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 ```
 
 Output:
 
 ```
-Api key for 'abuseipdb-reporter':
+Api key for 'abuseipdb-bouncer':
 
    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
@@ -97,7 +80,7 @@ Verify the bouncer was registered:
 docker exec crowdsec cscli bouncers list
 ```
 
-Expected output includes a row for `abuseipdb-reporter` with `last_pull` showing "never" (it hasn't connected yet).
+The output should include a row for `abuseipdb-bouncer` with `last_pull` showing "never" (it has not connected yet).
 
 ### 2. Clone the Repository
 
@@ -107,252 +90,105 @@ git clone https://github.com/developingchet/cs-abuseipdb-bouncer.git
 cd cs-abuseipdb-bouncer
 ```
 
-Verify the repository structure:
-
-```bash
-tree -L 2
-```
-
-Expected output:
-
-```
-.
-├── config
-│   └── crowdsec-custom-bouncer.yaml.tmpl
-├── docs
-│   ├── CONFIGURATION.md
-│   ├── DESIGN.md
-│   ├── REFERENCES.md
-│   ├── SETUP.md
-│   └── TROUBLESHOOTING.md
-├── scripts
-│   ├── bouncer-entrypoint.sh
-│   ├── crowdsec-abuseipdb-reporter.sh
-│   └── Dockerfile
-├── .env.example
-├── .gitignore
-├── CONTRIBUTING.md
-├── docker-compose.yml
-├── LICENSE
-└── README.md
-```
-
 ### 3. Configure Environment Variables
-
-Create the environment file:
 
 ```bash
 cp .env.example .env
-chmod 600 .env  # Restrict permissions (contains API keys)
+chmod 600 .env  # Restrict permissions -- file contains API keys
+nano .env       # or vim, code, etc.
 ```
 
-Edit `.env`:
+Minimum required configuration:
 
 ```bash
-nano .env  # or vim, code, etc.
-```
+# CrowdSec LAPI connection
+CROWDSEC_LAPI_URL=http://crowdsec:8080   # Adjust for your LAPI address
+CROWDSEC_LAPI_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  # From step 1
 
-Fill in the required variables:
-
-```bash
-# From step 1
-CROWDSEC_ABUSEIPDB_BOUNCER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# From your AbuseIPDB account
+# AbuseIPDB
 ABUSEIPDB_API_KEY=your_abuseipdb_v2_key_here
-
-# Daily limit based on your tier
-ABUSEIPDB_DAILY_LIMIT=1000  # Free tier
-
-# Optional: Enable pre-check to skip whitelisted IPs
-# ABUSEIPDB_PRECHECK=false
-
-# Optional: Filter out test/simulation events (decisions shorter than 5 minutes)
-# ABUSEIPDB_MIN_DURATION=0
-
-# Log level (info or debug)
-LOG_LEVEL=info
 ```
 
-Save and exit.
-
-Verify the file has no syntax errors:
+Optional configuration (uncomment and adjust as needed):
 
 ```bash
-source .env && echo "CROWDSEC_ABUSEIPDB_BOUNCER_KEY is set to: ${CROWDSEC_ABUSEIPDB_BOUNCER_KEY:0:8}..."
-source .env && echo "ABUSEIPDB_API_KEY is set to: ${ABUSEIPDB_API_KEY:0:8}..."
+# ABUSEIPDB_DAILY_LIMIT=1000    # Match your subscription tier
+# ABUSEIPDB_PRECHECK=false      # Enable to skip whitelisted IPs
+# ABUSEIPDB_MIN_DURATION=0      # Set to 300 to skip test decisions
+# COOLDOWN_DURATION=15m         # Per-IP cooldown window
+# LOG_LEVEL=info                # debug for verbose output
 ```
 
-### 4. Configure LAPI Connection
-
-Edit the bouncer configuration template:
+Save and verify:
 
 ```bash
-nano config/crowdsec-custom-bouncer.yaml.tmpl
+source .env
+echo "CROWDSEC_LAPI_KEY prefix: ${CROWDSEC_LAPI_KEY:0:8}..."
+echo "ABUSEIPDB_API_KEY prefix: ${ABUSEIPDB_API_KEY:0:8}..."
 ```
 
-Set the `api_url` to your CrowdSec LAPI address.
+### 4. Configure Docker Networking
 
-**Example 1: CrowdSec on the same Docker host**
+The bouncer needs network access to the CrowdSec LAPI. Edit `docker-compose.yml` and set the correct network name.
 
-If CrowdSec is running on the same host with a TLS proxy (Traefik, Nginx, Caddy):
-
-```yaml
-api_url: https://crowdsec.yourdomain.com:8443
-```
-
-**Example 2: CrowdSec on the same Docker network without TLS**
-
-If CrowdSec is on the same Docker network without a TLS terminator:
-
-```yaml
-api_url: http://crowdsec:8080
-insecure_skip_verify: true
-```
-
-**Example 3: Remote CrowdSec LAPI**
-
-```yaml
-api_url: https://remote-crowdsec.example.com:8443
-```
-
-If using a self-signed certificate, add:
-
-```yaml
-insecure_skip_verify: true
-```
-
-**Do not modify the `api_key` line.** It is a template placeholder replaced by the entrypoint script.
-
-Save and exit.
-
-### 5. Configure Docker Networking
-
-Edit `docker-compose.yml`:
+**Find your CrowdSec Docker network:**
 
 ```bash
-nano docker-compose.yml
+docker inspect crowdsec | jq -r '.[0].NetworkSettings.Networks | keys[0]'
 ```
 
-**a. Set the LAPI hostname resolution**
-
-Locate the `extra_hosts` section:
+**Update docker-compose.yml:**
 
 ```yaml
-extra_hosts:
-  - "YOUR_LAPI_HOST:YOUR_LAPI_IP"
+networks:
+  your_actual_network_name:   # Replace crowdsec-net with the name above
+    external: true
 ```
 
-Replace with your actual values:
+And in the service `networks` list:
 
 ```yaml
-# Example: CrowdSec container at 172.18.0.14
-extra_hosts:
-  - "crowdsec.yourdomain.com:172.18.0.14"
-
-# Or if using container name on same network
-extra_hosts:
-  - "crowdsec:172.18.0.14"
+abuseipdb-bouncer:
+  networks:
+    - your_actual_network_name
 ```
 
-To find your CrowdSec container IP:
-
-```bash
-docker inspect crowdsec | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress'
-```
-
-**b. Set the Docker network**
-
-Locate the `networks` section at the bottom:
+If CrowdSec is on a different host (remote LAPI), set `CROWDSEC_LAPI_URL` to the full HTTPS address and leave the networks section using the default bridge:
 
 ```yaml
 networks:
   crowdsec-net:
-    external: true
+    driver: bridge
 ```
 
-Options:
-
-1. **Use your existing CrowdSec network:**
-
-   Find the network name:
-   ```bash
-   docker inspect crowdsec | jq -r '.[0].NetworkSettings.Networks | keys[0]'
-   ```
-
-   Update `docker-compose.yml`:
-   ```yaml
-   networks:
-     your_crowdsec_network_name:
-       external: true
-   ```
-
-   And in the service definition:
-   ```yaml
-   abuseipdb-bouncer:
-     networks:
-       - your_crowdsec_network_name
-   ```
-
-2. **Create a new network:**
-
-   If you want a dedicated network, remove `external: true`:
-   ```yaml
-   networks:
-     crowdsec-net:
-       driver: bridge
-   ```
-
-Save and exit.
-
-### 6. Make Scripts Executable
-
-Ensure the scripts have execute permissions:
-
-```bash
-chmod +x scripts/bouncer-entrypoint.sh
-chmod +x scripts/crowdsec-abuseipdb-reporter.sh
-```
-
-Verify:
-
-```bash
-ls -l scripts/*.sh
-```
-
-Expected output shows `-rwxr-xr-x` permissions.
-
-### 7. Build the Docker Image
+### 5. Build the Docker Image
 
 ```bash
 docker compose build
 ```
 
-Expected output includes:
+This step downloads Go module dependencies and compiles the binary inside the container. No local Go installation is required.
+
+Expected output:
 
 ```
 [+] Building X.Xs (8/8) FINISHED
- => [internal] load build definition from Dockerfile
- => [internal] load .dockerignore
- => [1/2] FROM docker.io/crowdsecurity/custom-bouncer:v0.0.19
- => [2/2] RUN apk add --no-cache jq curl
+ => [builder 1/5] FROM docker.io/library/golang:1.23-alpine
+ => [builder 4/5] RUN go mod download
+ => [builder 5/5] RUN CGO_ENABLED=0 ... go build -o /bouncer ./cmd/bouncer/
+ => [stage-1 1/4] FROM gcr.io/distroless/static-debian12:nonroot
  => exporting to image
- => => naming to docker.io/library/abuseipdb-bouncer:local
 ```
 
-Verify the image was created:
+Verify the image:
 
 ```bash
 docker images | grep abuseipdb-bouncer
 ```
 
-Expected output:
+The final image is approximately 8-12MB.
 
-```
-abuseipdb-bouncer   local   <image_id>   X seconds ago   ~20MB
-```
-
-### 8. Start the Bouncer
+### 6. Start the Bouncer
 
 ```bash
 docker compose up -d
@@ -365,68 +201,50 @@ Expected output:
  ✔ Container abuseipdb-bouncer  Started
 ```
 
-### 9. Verify the Deployment
+### 7. Verify the Deployment
 
-**a. Check container status:**
+**Check container status:**
 
 ```bash
 docker ps | grep abuseipdb-bouncer
 ```
 
-Expected output shows the container in "Up" state.
+Expected: container in "Up" state with `(healthy)` once the healthcheck passes (~15 seconds after startup).
 
-**b. Check logs:**
+**Check startup logs:**
 
 ```bash
 docker logs abuseipdb-bouncer
 ```
 
-Expected output:
+Expected startup log:
 
-```
-time="2026-02-16T20:00:00Z" level=info msg="config rendered — starting bouncer"
-time="2026-02-16T20:00:00Z" level=info msg="Starting crowdsec-custom-bouncer v0.0.19-..."
-time="2026-02-16T20:00:00Z" level=info msg="Using API key auth"
-time="2026-02-16T20:00:00Z" level=info msg="Processing new and deleted decisions . . ."
-time="2026-02-16T20:00:00Z" level=info msg="reporter started limit=1000 used_today=0 cooldown=900s precheck=false min_duration=0s log_level=info"
-time="2026-02-16T20:00:00Z" level=info msg="deleting 0 decisions"
-time="2026-02-16T20:00:00Z" level=info msg="adding X decisions"
+```json
+{"time":1739836200,"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","msg":"bouncer started"}
 ```
 
-If you see errors, proceed to the [Troubleshooting section](#troubleshooting).
-
-**c. Verify bouncer is pulling from LAPI:**
+**Verify the bouncer is pulling from LAPI:**
 
 ```bash
 docker exec crowdsec cscli bouncers list
 ```
 
-Expected output shows `abuseipdb-reporter` with a recent `last_pull` timestamp:
+Expected: `abuseipdb-bouncer` row shows a recent `last_pull` timestamp.
 
-```
- Name                 IP Address  Valid  Last API pull         Type    Version
- abuseipdb-reporter   172.18.0.X  ✔️      2026-02-16T20:00:30Z  custom  v0.0.19
-```
-
-### 10. Test with a Manual Decision
-
-Create a test decision to verify end-to-end functionality:
+### 8. Test with a Manual Decision
 
 ```bash
+# Create a test decision (203.0.113.42 is the TEST-NET-3 documentation range)
 docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test report"
+
+# Watch logs
+docker logs -f abuseipdb-bouncer
 ```
 
-Check the bouncer logs:
+Expected log output:
 
-```bash
-docker logs abuseipdb-bouncer | tail -5
-```
-
-Expected output includes:
-
-```
-time="..." level=info msg="reporting ip=203.0.113.42 id=XXXXXXX scenario=manual cats=15"
-time="..." level=info msg="reported ip=203.0.113.42 daily=1/1000"
+```json
+{"time":1739836530,"level":"info","ip":"203.0.113.42","sink":"abuseipdb","daily":1,"limit":1000,"msg":"reported"}
 ```
 
 Verify on AbuseIPDB:
@@ -439,7 +257,7 @@ curl -G https://api.abuseipdb.com/api/v2/check \
   -H "Accept: application/json" | jq -r '.data.totalReports'
 ```
 
-Should return `1` if the report was successful.
+Should return `1` if the report succeeded.
 
 Clean up the test decision:
 
@@ -447,41 +265,40 @@ Clean up the test decision:
 docker exec crowdsec cscli decisions delete -i 203.0.113.42
 ```
 
+---
+
 ## Post-Installation Verification
 
 ### Health Check
 
-The container includes a healthcheck. Verify it's passing:
+The container has a built-in healthcheck that runs `bouncer healthcheck` every 30 seconds. This performs a lightweight connectivity check against the AbuseIPDB API.
 
 ```bash
 docker inspect abuseipdb-bouncer | jq -r '.[0].State.Health.Status'
 ```
 
-Expected output: `healthy`
+Expected: `healthy`
 
 ### State Persistence
 
-Verify the state volume is mounted:
+Verify the named volume is mounted:
 
 ```bash
 docker inspect abuseipdb-bouncer | jq -r '.[0].Mounts[] | select(.Destination == "/tmp/cs-abuseipdb") | .Name'
 ```
 
-Expected output: `abuseipdb-state` or a volume hash.
-
-Check the daily counter file exists:
+Check the daily counter:
 
 ```bash
-docker exec abuseipdb-bouncer cat /tmp/cs-abuseipdb/daily
+# Access state via a temporary container sharing the volume
+docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine cat /state/daily
 ```
 
-Expected output: `1 2026-02-16` (or current date if you ran the test in step 10).
+Expected: `1 2026-02-17` (or `0` on a fresh install with no reports sent).
 
 ### Log Rotation
 
-The bouncer logs to Docker's stdout. Configure log rotation via Docker daemon settings.
-
-Edit `/etc/docker/daemon.json`:
+Configure Docker's log driver to prevent unbounded log growth. Edit `/etc/docker/daemon.json`:
 
 ```json
 {
@@ -499,78 +316,90 @@ Restart Docker:
 sudo systemctl restart docker
 ```
 
+---
+
 ## Integration Examples
 
-### Example 1: Traefik with Let's Encrypt
+### Example 1: TLS-Enabled LAPI
 
-If CrowdSec's LAPI is exposed via Traefik with a real Let's Encrypt certificate:
+If CrowdSec's LAPI uses a valid TLS certificate (via Traefik, Nginx, or Caddy):
 
-**docker-compose.yml:**
-
-```yaml
-extra_hosts:
-  - "crowdsec.yourdomain.com:172.18.0.11"  # Traefik container IP
-
-networks:
-  traefik-net:
-    external: true
+```bash
+# .env
+CROWDSEC_LAPI_URL=https://crowdsec.yourdomain.com:8443
 ```
 
-**config/crowdsec-custom-bouncer.yaml.tmpl:**
+No other changes are needed -- the container includes standard CA certificates from the Alpine builder stage.
 
-```yaml
-api_url: https://crowdsec.yourdomain.com:8443
-# No insecure_skip_verify needed — valid certificate
+### Example 2: Self-Signed Certificate
+
+If your LAPI uses a self-signed certificate:
+
+```bash
+# .env
+CROWDSEC_LAPI_URL=https://crowdsec.local:8443
+TLS_SKIP_VERIFY=true
 ```
 
-### Example 2: Remote CrowdSec LAPI (Different Host)
+### Example 3: Remote LAPI on a Different Host
 
-If CrowdSec is running on a different server:
+If CrowdSec runs on a separate machine:
 
-**docker-compose.yml:**
+```bash
+# .env
+CROWDSEC_LAPI_URL=https://crowdsec-server.example.com:8443
+```
+
+Update `docker-compose.yml` to use the default bridge network (no `external: true`):
 
 ```yaml
-# No extra_hosts needed — use DNS
 networks:
-  default:
+  crowdsec-net:
     driver: bridge
 ```
 
-**config/crowdsec-custom-bouncer.yaml.tmpl:**
+Ensure your firewall allows the bouncer host to reach the LAPI port (8080 or 8443).
 
-```yaml
-api_url: https://crowdsec-server.example.com:8443
-# Add insecure_skip_verify: true if using self-signed cert
+### Example 4: CrowdSec on the Same Docker Network
+
+If the bouncer and CrowdSec containers are on the same Docker network, Docker DNS resolves the service name automatically:
+
+```bash
+# .env
+CROWDSEC_LAPI_URL=http://crowdsec:8080
 ```
 
-Ensure firewall rules allow the bouncer host to reach the LAPI port.
+No `extra_hosts` entry is needed.
 
-### Example 3: Kubernetes Deployment
+### Example 5: Kubernetes Deployment
 
-Kubernetes support is not included in this repository. If you need a Helm chart or Kubernetes manifests, open a discussion at https://github.com/developingchet/cs-abuseipdb-bouncer/discussions — community contributions are welcome.
+Kubernetes support is not included in this repository. If you need a Helm chart or Kubernetes manifests, open a discussion at https://github.com/developingchet/cs-abuseipdb-bouncer/discussions -- community contributions are welcome.
+
+---
 
 ## Troubleshooting
 
-If issues arise during setup, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common problems and solutions.
+If issues arise, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common problems and solutions.
 
 Quick diagnostics:
 
 ```bash
-# Check bouncer can reach LAPI
-docker exec abuseipdb-bouncer wget -O- https://crowdsec.yourdomain.com:8443/health
-
-# Check bouncer can reach AbuseIPDB
-docker exec abuseipdb-bouncer wget -O- https://api.abuseipdb.com
+# Check container health
+docker inspect --format='{{.State.Health.Status}}' abuseipdb-bouncer
 
 # Enable debug logging
 echo "LOG_LEVEL=debug" >> .env
 docker compose up -d --force-recreate abuseipdb-bouncer
 docker logs -f abuseipdb-bouncer
+
+# Run healthcheck manually
+docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
+echo "Exit code: $?"
 ```
 
 ## Next Steps
 
-- Review [CONFIGURATION.md](CONFIGURATION.md) for advanced configuration options
+- Review [CONFIGURATION.md](CONFIGURATION.md) for all available options
 - Set up log aggregation (Loki, Elasticsearch, Splunk)
-- Configure monitoring/alerting on the daily quota metric
-- Consider enabling `ABUSEIPDB_PRECHECK` to reduce wasted quota on whitelisted IPs
+- Configure monitoring or alerting on daily quota usage
+- Consider enabling `ABUSEIPDB_PRECHECK=true` to reduce wasted quota on whitelisted IPs

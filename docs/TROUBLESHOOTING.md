@@ -4,193 +4,84 @@ Common issues and solutions for the CrowdSec AbuseIPDB Bouncer.
 
 ## Table of Contents
 
-- [Bouncer Connectivity Issues](#bouncer-connectivity-issues)
-- [No Reports Being Sent](#no-reports-being-sent)
-- [State Persistence Problems](#state-persistence-problems)
-- [Performance Issues](#performance-issues)
-- [Log Analysis](#log-analysis)
+- [Container Won't Start](#container-wont-start)
+- [No Decisions Being Reported](#no-decisions-being-reported)
+- [Authentication Errors](#authentication-errors)
+- [Rate Limiting](#rate-limiting)
+- [State and Quota Issues](#state-and-quota-issues)
+- [Network Connectivity](#network-connectivity)
+- [Debug Procedure](#debug-procedure)
 
-## Bouncer Connectivity Issues
+---
 
-### Bouncer Cannot Reach LAPI
+## Container Won't Start
 
-**Symptoms:**
+### Configuration validation error
 
+**Symptom:** Container exits immediately with a configuration error.
+
+```json
+{"level":"error","error":"3 configuration error(s):\n  - CROWDSEC_LAPI_KEY is required...","msg":"fatal"}
 ```
-time="..." level=error msg="dial tcp: lookup crowdsec.local: no such host"
-time="..." level=error msg="dial tcp 172.18.0.14:8443: connect: connection refused"
-time="..." level=error msg="Get https://crowdsec.local:8443/v1/decisions/stream: x509: certificate signed by unknown authority"
-```
 
-**Diagnosis:**
+**Cause:** One or more required environment variables are missing or invalid.
 
-1. Check hostname resolution:
-   ```bash
-   docker exec abuseipdb-bouncer nslookup crowdsec.local
-   docker exec abuseipdb-bouncer ping -c 1 crowdsec.local
-   ```
-
-2. Verify LAPI is listening:
-   ```bash
-   docker exec crowdsec netstat -tlnp | grep 8443
-   ```
-
-3. Test LAPI from bouncer container:
-   ```bash
-   docker exec abuseipdb-bouncer wget -O- https://crowdsec.local:8443/health
-   ```
-
-**Solutions:**
-
-**DNS resolution failure:**
-- Verify `extra_hosts` in `docker-compose.yml` has the correct IP
-- Check the LAPI container IP:
-  ```bash
-  docker inspect crowdsec | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress'
-  ```
-- Update `docker-compose.yml` and restart:
-  ```bash
-  docker compose up -d --force-recreate abuseipdb-bouncer
-  ```
-
-**Connection refused:**
-- LAPI is not listening on the expected port
-- Check CrowdSec config:
-  ```bash
-  docker exec crowdsec cat /etc/crowdsec/config.yaml | grep -A5 api:
-  ```
-- Update `api_url` in `config/crowdsec-custom-bouncer.yaml.tmpl` to match
-- If using TLS via Traefik/Nginx, ensure the proxy is running:
-  ```bash
-  docker ps | grep traefik
-  curl -k https://crowdsec.local:8443/health
-  ```
-
-**Certificate error:**
-- Using self-signed certificate without `insecure_skip_verify: true`
-- Add to `config/crowdsec-custom-bouncer.yaml.tmpl`:
-  ```yaml
-  insecure_skip_verify: true
-  ```
-- Rebuild and restart:
-  ```bash
-  docker compose up -d --force-recreate abuseipdb-bouncer
-  ```
-
-### Bouncer Registered but Not Pulling
-
-**Symptoms:**
+**Fix:** Check that `.env` contains all required variables and that it is being read:
 
 ```bash
-docker exec crowdsec cscli bouncers list
-# Shows "abuseipdb-reporter" but last_pull is "never" or stale
+# Verify .env is loaded
+docker compose config | grep -E "CROWDSEC|ABUSEIPDB"
+
+# Check for common issues
+grep -E "^(CROWDSEC_LAPI_URL|CROWDSEC_LAPI_KEY|ABUSEIPDB_API_KEY)=" .env
 ```
 
-**Diagnosis:**
+All three must be set and non-empty. `CROWDSEC_LAPI_URL` must include the scheme (`http://` or `https://`).
 
-1. Check bouncer logs for errors:
-   ```bash
-   docker logs abuseipdb-bouncer | grep -i error
-   ```
+### LAPI connection refused at startup
 
-2. Verify API key is correct:
-   ```bash
-   # Check key is set (shows first 8 chars)
-   docker exec abuseipdb-bouncer env | grep CROWDSEC_ABUSEIPDB_BOUNCER_KEY
-   ```
+**Symptom:** Container starts but immediately shows a connection error.
 
-3. Test LAPI manually with the key:
-   ```bash
-   docker exec crowdsec cscli bouncers list -o json | jq -r '.[] | select(.name=="abuseipdb-reporter") | .token'
-   # Use the token from above
-   curl -H "X-Api-Key: YOUR_TOKEN" https://crowdsec.local:8443/v1/decisions/stream
-   ```
-
-**Solutions:**
-
-**Wrong API key:**
-- Regenerate bouncer key:
-  ```bash
-  docker exec crowdsec cscli bouncers delete abuseipdb-reporter
-  docker exec crowdsec cscli bouncers add abuseipdb-reporter
-  ```
-- Update `.env` with new key
-- Restart:
-  ```bash
-  docker compose up -d --force-recreate abuseipdb-bouncer
-  ```
-
-**Bouncer not running:**
-- Check container status:
-  ```bash
-  docker ps -a | grep abuseipdb-bouncer
-  ```
-- If exited, check logs:
-  ```bash
-  docker logs abuseipdb-bouncer
-  ```
-- Common causes: missing environment variables, script syntax errors
-
-### Bouncer Cannot Reach AbuseIPDB
-
-**Symptoms:**
-
-```
-time="..." level=error msg="network error connecting to AbuseIPDB ip=..."
+```json
+{"level":"error","error":"dial tcp: connect: connection refused","msg":"bouncer init failed"}
 ```
 
-**Diagnosis:**
+**Cause:** The LAPI URL is unreachable from inside the container.
 
-1. Test connectivity from container:
-   ```bash
-   docker exec abuseipdb-bouncer wget -O- https://api.abuseipdb.com
-   ```
+**Fix:**
+1. Verify the LAPI URL is correct: `CROWDSEC_LAPI_URL=http://crowdsec:8080`
+2. Verify the bouncer is on the same Docker network as CrowdSec
+3. Test connectivity from within the container:
 
-2. Check for HTTP proxy environment variables:
-   ```bash
-   docker exec abuseipdb-bouncer env | grep -i proxy
-   ```
-
-3. Test DNS resolution:
-   ```bash
-   docker exec abuseipdb-bouncer nslookup api.abuseipdb.com
-   ```
-
-**Solutions:**
-
-**Firewall blocking outbound HTTPS:**
-- Allow outbound connections to api.abuseipdb.com on port 443
-- If behind corporate proxy, set in `docker-compose.yml`:
-  ```yaml
-  environment:
-    - https_proxy=http://proxy.company.com:8080
-  ```
-
-**DNS resolution failure:**
-- Use a public DNS server:
-  ```yaml
-  services:
-    abuseipdb-bouncer:
-      dns:
-        - 8.8.8.8
-        - 8.8.4.4
-  ```
-
-## No Reports Being Sent
-
-### All Decisions Filtered
-
-**Symptoms:**
-
-```
-time="..." level=info msg="reporter started limit=1000 used_today=0 ..."
-time="..." level=info msg="adding 5 decisions"
-# No "reporting ip=..." lines follow
+```bash
+# For HTTP LAPI
+docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
 ```
 
-**Diagnosis:**
+---
 
-Enable debug logging to see why decisions are skipped:
+## No Decisions Being Reported
+
+### No decisions in CrowdSec
+
+**Symptom:** Bouncer starts successfully but no `reported` log lines appear.
+
+**Check:** Does CrowdSec have any active decisions?
+
+```bash
+docker exec crowdsec cscli decisions list
+```
+
+If no decisions are listed, the bouncer has nothing to report. Add a test decision:
+
+```bash
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test"
+docker logs -f abuseipdb-bouncer
+```
+
+### Decisions are being filtered
+
+**Symptom:** Decisions exist in CrowdSec but the bouncer never reports them. Enable debug logging to see why:
 
 ```bash
 echo "LOG_LEVEL=debug" >> .env
@@ -198,366 +89,240 @@ docker compose up -d --force-recreate abuseipdb-bouncer
 docker logs -f abuseipdb-bouncer
 ```
 
-Look for debug messages like:
-```
-time="..." level=debug msg="skip cooldown ip=..."
-time="..." level=debug msg="skip private ip=..."
-time="..." level=debug msg="skip origin=CAPI ip=..."
-```
+Look for `"msg":"decision filtered"` log lines. The `filter` field identifies which step rejected the decision:
 
-**Solutions:**
+| filter | Cause | Fix |
+|--------|-------|-----|
+| `action` | Decision has action=del (delete event) | Normal -- delete events are not reported |
+| `scenario-exclude` | impossible-travel scenario | Expected -- these detect account compromise, not IP abuse |
+| `origin` | CAPI or lists origin | Expected -- community blocklist IPs are not re-reported |
+| `scope` | Range, ASN, or country scope | AbuseIPDB only accepts single IPs |
+| `value` | Empty IP value | Indicates a malformed decision in CrowdSec |
+| `private-ip` | Private/reserved IP range | Expected -- private IPs are not reported |
+| `min-duration` | Decision duration is below ABUSEIPDB_MIN_DURATION | Lower or disable ABUSEIPDB_MIN_DURATION |
+| `quota` | Daily limit reached | Wait for UTC midnight reset or increase ABUSEIPDB_DAILY_LIMIT |
+| `cooldown` | IP was reported within the cooldown window | Normal -- prevents duplicate reports |
 
-**All IPs on cooldown:**
-- Expected if the decisions are recent (within last 15 minutes)
-- Wait 15 minutes and new attacks will be reported
-- Check cooldown state:
-  ```bash
-  docker exec abuseipdb-bouncer ls -lh /tmp/cs-abuseipdb/cooldown/
-  ```
+### Decisions are within the cooldown window
 
-**All IPs are private:**
-- Decision IPs are RFC1918/loopback/CGNAT
-- This is correct behavior (private IPs should not be reported)
-- Verify with:
-  ```bash
-  docker exec crowdsec cscli decisions list -o json | jq -r '.[].value'
-  ```
-
-**All origins are CAPI/lists:**
-- Decisions are from community blocklist, not local detections
-- This is correct behavior (don't re-report community IPs)
-- Verify with:
-  ```bash
-  docker exec crowdsec cscli decisions list -o json | jq -r 'group_by(.origin) | map({origin: .[0].origin, count: length})'
-  ```
-- To see local detections only:
-  ```bash
-  docker exec crowdsec cscli decisions list -o json | jq '.[] | select(.origin == "crowdsec" or .origin == "cscli")'
-  ```
-
-**Wrong scope:**
-- Decisions are Range/AS/Country, not Ip
-- Check scopes:
-  ```bash
-  docker exec crowdsec cscli decisions list -o json | jq -r 'group_by(.scope) | map({scope: .[0].scope, count: length})'
-  ```
-- The bouncer only processes Ip scope by design
-
-### Daily Quota Exhausted
-
-**Symptoms:**
-
-```
-time="..." level=warning msg="daily cap reached limit=1000 dropping ip=..."
-```
-
-**Diagnosis:**
-
-Check how many reports were sent today:
+If an IP is being repeatedly detected, the first detection is reported and subsequent ones are suppressed until the cooldown expires.
 
 ```bash
-docker exec abuseipdb-bouncer cat /tmp/cs-abuseipdb/daily
-# Output: "850 2026-02-16" (count and date)
+# Check cooldown file for a specific IP
+docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine \
+  cat /state/cooldown/203_0_113_42
 ```
 
-**Solutions:**
-
-**Upgrade AbuseIPDB tier:**
-- Webmaster (free): 3000/day - verify domain at https://www.abuseipdb.com/account/webmasters
-- Premium (paid): 50000/day
-
-**Increase limit in .env:**
-```bash
-ABUSEIPDB_DAILY_LIMIT=3000
-```
-
-**Filter low-value decisions:**
-Set minimum duration to only report long bans:
-```bash
-ABUSEIPDB_MIN_DURATION=3600  # Only report bans 1 hour or longer
-```
-
-Enable pre-check to skip known-good IPs:
-```bash
-ABUSEIPDB_PRECHECK=true
-```
-
-### API Key Invalid
-
-**Symptoms:**
-
-```
-time="..." level=error msg="401 unauthorized — verify ABUSEIPDB_API_KEY in .env"
-```
-
-**Diagnosis:**
-
-Test API key manually:
+The file contains a Unix timestamp (seconds since epoch). Convert it:
 
 ```bash
-curl -G https://api.abuseipdb.com/api/v2/check \
+date -d @<timestamp>
+```
+
+---
+
+## Authentication Errors
+
+### AbuseIPDB returns 401
+
+**Symptom:**
+
+```json
+{"level":"error","error":"unauthorized (401)","ip":"203.0.113.42","msg":"report failed"}
+```
+
+**Cause:** The `ABUSEIPDB_API_KEY` value is invalid or the key has been revoked.
+
+**Fix:**
+1. Verify the key at https://www.abuseipdb.com/account/api
+2. Test the key directly:
+
+```bash
+curl -s -w "\nHTTP %{http_code}\n" \
+  -G https://api.abuseipdb.com/api/v2/check \
   --data-urlencode "ipAddress=127.0.0.1" \
-  -d maxAgeInDays=90 \
-  -H "Key: YOUR_API_KEY" \
-  -H "Accept: application/json"
+  -H "Key: YOUR_KEY" -H "Accept: application/json"
 ```
 
-If you get `401 Unauthorized`, the key is invalid.
+If this returns HTTP 401, the key is invalid. Generate a new one and update `.env`.
 
-**Solutions:**
+### CrowdSec LAPI returns 401
 
-- Verify the key at https://www.abuseipdb.com/account/api
-- Generate a new key if needed
-- Update `.env`:
-  ```bash
-  ABUSEIPDB_API_KEY=new_key_here
-  ```
-- Restart:
-  ```bash
-  docker compose up -d --force-recreate abuseipdb-bouncer
-  ```
+**Symptom:** Bouncer logs show LAPI authentication failure at startup.
 
-## State Persistence Problems
+**Cause:** The `CROWDSEC_LAPI_KEY` has been deleted from CrowdSec.
 
-### Daily Counter Resets on Restart
-
-**Symptoms:**
-
-After `docker compose restart`, the daily counter is back to 0.
-
-**Diagnosis:**
-
-Check if the volume is actually mounted:
+**Fix:**
+1. Check if the bouncer is still registered:
 
 ```bash
-docker inspect abuseipdb-bouncer | jq -r '.[0].Mounts[] | select(.Destination == "/tmp/cs-abuseipdb")'
+docker exec crowdsec cscli bouncers list
 ```
 
-If output is empty, the volume is not mounted.
-
-**Solutions:**
-
-Verify `docker-compose.yml` has the volume:
-
-```yaml
-volumes:
-  - abuseipdb-state:/tmp/cs-abuseipdb
-```
-
-And the named volume is defined at the bottom:
-
-```yaml
-volumes:
-  abuseipdb-state:
-    driver: local
-```
-
-Recreate:
+2. If `abuseipdb-bouncer` is missing, re-register:
 
 ```bash
-docker compose down
-docker compose up -d
+docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 ```
 
-### Cooldown Not Working
+3. Update `CROWDSEC_LAPI_KEY` in `.env` with the new key and restart.
 
-**Symptoms:**
+---
 
-Same IP is reported multiple times within 15 minutes.
+## Rate Limiting
 
-**Diagnosis:**
+### AbuseIPDB returns 429
 
-1. Check if state directory is writable:
-   ```bash
-   docker exec abuseipdb-bouncer touch /tmp/cs-abuseipdb/test
-   docker exec abuseipdb-bouncer rm /tmp/cs-abuseipdb/test
-   ```
+**Symptom:**
 
-2. Check cooldown files are being created:
-   ```bash
-   docker exec abuseipdb-bouncer ls -lh /tmp/cs-abuseipdb/cooldown/
-   ```
+```json
+{"level":"warn","sleep":86400,"msg":"rate-limited -- check daily quota at abuseipdb.com/account"}
+```
 
-3. Look for log entries:
-   ```bash
-   docker logs abuseipdb-bouncer | grep "skip cooldown"
-   ```
+**Cause:** The daily report quota is exhausted. AbuseIPDB enforces this hard limit per API key per day.
 
-**Solutions:**
+**Fix:**
+- Wait for the quota to reset. AbuseIPDB resets quotas at 00:00 UTC.
+- The bouncer's local `ABUSEIPDB_DAILY_LIMIT` counter prevents most 429 responses by refusing to send reports once the local limit is reached. If you see a 429, the local counter may be lower than the actual AbuseIPDB limit, or the quota was consumed by other means (manual API calls, other tools).
+- Lower `ABUSEIPDB_DAILY_LIMIT` to match your actual quota, or upgrade your AbuseIPDB subscription.
 
-**Volume permissions issue:**
-- Recreate the volume:
-  ```bash
-  docker compose down -v
-  docker compose up -d
-  ```
+---
 
-**Multiple bouncer instances:**
-- If running multiple containers with separate volumes, each tracks cooldowns independently
-- Use a shared volume across instances:
-  ```yaml
-  services:
-    bouncer-1:
-      volumes:
-        - abuseipdb-state:/tmp/cs-abuseipdb
-    bouncer-2:
-      volumes:
-        - abuseipdb-state:/tmp/cs-abuseipdb  # Same volume
-  ```
+## State and Quota Issues
 
-## Performance Issues
+### Daily counter not resetting
 
-### High Memory Usage
+**Symptom:** Bouncer appears to be at quota limit even after midnight UTC.
 
-**Symptoms:**
+**Cause:** The state volume is not mounted, so the counter file is not writable or not accessible.
 
-Container using more than 100MB RAM.
-
-**Diagnosis:**
-
-Check memory usage:
+**Fix:**
 
 ```bash
-docker stats abuseipdb-bouncer --no-stream
+# Check volume mount
+docker inspect abuseipdb-bouncer | jq -r '.[0].Mounts'
+
+# Check the daily file
+docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine cat /state/daily
 ```
 
-**Typical usage:** 20-50MB
-
-**Solutions:**
-
-**Large number of cooldown files:**
-- Check count:
-  ```bash
-  docker exec abuseipdb-bouncer find /tmp/cs-abuseipdb/cooldown -type f | wc -l
-  ```
-- If over 10,000, there may be a cleanup issue
-- Manually prune:
-  ```bash
-  docker exec abuseipdb-bouncer find /tmp/cs-abuseipdb/cooldown -type f -mmin +15 -delete
-  ```
-
-**jq/curl memory leak (rare):**
-- Restart the container:
-  ```bash
-  docker compose restart abuseipdb-bouncer
-  ```
-
-### Slow Reporting
-
-**Symptoms:**
-
-Long delays between "reporting ip=..." and "reported ip=...".
-
-**Diagnosis:**
-
-Time an API call:
+The file format is `"<count> <YYYY-MM-DD>"`. If the date is stale, the bouncer should have reset it automatically on startup. If the file is corrupt, delete it:
 
 ```bash
-time docker exec abuseipdb-bouncer curl -X POST https://api.abuseipdb.com/api/v2/report \
-  -H "Key: YOUR_KEY" \
-  --data-urlencode "ip=203.0.113.42" \
-  --data-urlencode "categories=15" \
-  --data-urlencode "comment=test"
+docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine rm /state/daily
+docker compose restart abuseipdb-bouncer
 ```
 
-**Typical response time:** 200-500ms
+### Cooldown files not pruned
 
-**Solutions:**
+**Symptom:** The cooldown directory grows without bound.
 
-**Network latency:**
-- Check latency to AbuseIPDB:
-  ```bash
-  docker exec abuseipdb-bouncer ping -c 10 api.abuseipdb.com
-  ```
-- If high (>100ms), consider geographic CDN or accept the delay
+**Cause:** The bouncer prunes cooldown files every 200 decisions and on graceful shutdown. If the container is killed (not stopped) frequently, pruning may not run.
 
-**Rate limiting (429):**
-- Look for warning logs:
-  ```
-  time="..." level=warning msg="rate-limited sleep=..."
-  ```
-- This is expected when hitting quota limits
-- Reduce decision volume or upgrade tier
-
-## Log Analysis
-
-### Structured Log Parsing
-
-The logs use logrus format: `time="..." level=... msg="..."`
-
-**Extract all errors:**
+**Fix:** Prune manually:
 
 ```bash
-docker logs abuseipdb-bouncer | grep 'level=error'
+# Delete all expired cooldown files
+docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine \
+  find /state/cooldown -type f -delete
 ```
 
-**Count reports by category:**
+Then restart the bouncer normally. Active cooldowns will be re-established on the next report.
+
+---
+
+## Network Connectivity
+
+### Cannot reach AbuseIPDB
+
+**Symptom:** All reports fail with network errors.
+
+**Test:**
 
 ```bash
-docker logs abuseipdb-bouncer \
-  | grep 'reporting ip=' \
-  | grep -oP 'cats=\K[0-9,]+' \
-  | sort | uniq -c | sort -rn
+# The distroless container has no curl/wget; test from the host
+curl -s -o /dev/null -w "%{http_code}" https://api.abuseipdb.com
 ```
 
-**Daily report count:**
+Expected: `200` or `403` (403 is normal for unauthenticated root requests).
+
+If the test fails, the issue is with the host's outbound network, firewall rules, or DNS resolution.
+
+### Cannot reach CrowdSec LAPI
+
+**Test:** Use the built-in healthcheck subcommand:
 
 ```bash
-docker logs abuseipdb-bouncer \
-  | grep 'reported ip=' \
-  | grep -oP 'daily=\K[0-9]+' \
-  | tail -1
+docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
+echo "Exit: $?"
 ```
 
-**Most reported IPs:**
+Exit 0 means connectivity is working. Exit non-zero means the LAPI is unreachable or the API key is invalid.
+
+---
+
+## Debug Procedure
+
+When something is not working and the cause is unclear, follow this procedure in order:
+
+**1. Check container health:**
 
 ```bash
-docker logs abuseipdb-bouncer \
-  | grep 'reported ip=' \
-  | grep -oP 'reported ip=\K[0-9.]+' \
-  | sort | uniq -c | sort -rn | head -10
+docker inspect --format='{{json .State}}' abuseipdb-bouncer | jq '{Status, Running, ExitCode, Health: .Health.Status}'
 ```
 
-### Debug Mode Analysis
-
-With `LOG_LEVEL=debug`, analyze why decisions are filtered:
-
-**Cooldown hits:**
+**2. Check logs for errors:**
 
 ```bash
-docker logs abuseipdb-bouncer | grep 'skip cooldown' | wc -l
+docker logs abuseipdb-bouncer 2>&1 | grep '"level":"error"'
+docker logs abuseipdb-bouncer 2>&1 | grep '"level":"warn"'
 ```
 
-**Private IP filters:**
+**3. Enable debug logging:**
 
 ```bash
-docker logs abuseipdb-bouncer | grep 'skip private' | wc -l
+echo "LOG_LEVEL=debug" >> .env
+docker compose up -d --force-recreate abuseipdb-bouncer
+docker logs -f abuseipdb-bouncer
 ```
 
-**Origin filters:**
+Debug mode logs every decision (received and filtered). Look for decisions that should be reported but are being filtered.
+
+**4. Inject a test decision:**
 
 ```bash
-docker logs abuseipdb-bouncer | grep 'skip origin=' | grep -oP 'origin=\K[^ ]+' | sort | uniq -c
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "debug test"
+# Watch for the decision to appear in logs within 30 seconds
+docker logs -f abuseipdb-bouncer | grep 203.0.113.42
 ```
 
-## Getting Help
+**5. Test connectivity from the bouncer:**
 
-If issues persist after trying these solutions:
+```bash
+docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
+echo "Healthcheck exit code: $?"
+```
 
-1. Collect diagnostic information:
-   ```bash
-   docker logs abuseipdb-bouncer > bouncer.log
-   docker inspect abuseipdb-bouncer > bouncer-inspect.json
-   docker exec crowdsec cscli bouncers list -o json > bouncers.json
-   docker exec crowdsec cscli decisions list -o json > decisions.json
-   ```
+**6. Run the binary version check:**
 
-2. Open an issue at https://github.com/developingchet/cs-abuseipdb-bouncer/issues
+```bash
+docker exec abuseipdb-bouncer /usr/local/bin/bouncer version
+```
 
-3. Include:
-   - Output of `docker logs abuseipdb-bouncer` (sanitize IPs/keys)
-   - Output of `docker compose config` (sanitize keys)
-   - CrowdSec version: `docker exec crowdsec cscli version`
-   - Description of expected vs actual behavior
+**7. Check CrowdSec sees the bouncer:**
 
-4. Join CrowdSec Discord for community support: https://discord.gg/crowdsec
+```bash
+docker exec crowdsec cscli bouncers list
+```
+
+The `last_pull` column should show a recent timestamp (updated every poll interval).
+
+---
+
+If the problem persists after following these steps, open an issue at https://github.com/developingchet/cs-abuseipdb-bouncer/issues and include:
+
+- Output of `docker logs abuseipdb-bouncer` (sanitize API keys and IPs)
+- Output of `docker inspect abuseipdb-bouncer` (sanitize API keys)
+- Output of `docker exec crowdsec cscli bouncers list`
+- Your Docker and Docker Compose versions
+- A description of the expected vs. actual behavior

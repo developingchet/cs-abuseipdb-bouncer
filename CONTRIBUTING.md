@@ -28,26 +28,26 @@ This project follows the principles of respectful, inclusive collaboration:
 Before reporting a bug:
 
 1. Check existing issues: https://github.com/developingchet/cs-abuseipdb-bouncer/issues
-2. Verify you're using the latest version
-3. Test with `LOG_LEVEL=debug` to gather detailed logs
+2. Verify you are using the latest version
+3. Enable debug logging to gather detailed output: `LOG_LEVEL=debug`
 
 When submitting a bug report, include:
 
 - Output of `docker logs abuseipdb-bouncer` (sanitize IPs and API keys)
-- Output of `docker compose config` (sanitize keys)
+- Output of `docker inspect abuseipdb-bouncer` (sanitize keys)
 - CrowdSec version: `docker exec crowdsec cscli version`
 - Your Docker and Docker Compose versions
 - Steps to reproduce the issue
 - Expected vs. actual behavior
 
-**Security vulnerabilities should be reported privately via email, not as public issues.**
+Security vulnerabilities should be reported privately via email, not as public issues.
 
 ### Suggesting Enhancements
 
 Enhancement suggestions are welcome. When proposing a feature:
 
-1. Check if it's already requested in existing issues
-2. Explain the problem you're trying to solve
+1. Check if it is already requested in existing issues
+2. Explain the problem you are trying to solve
 3. Describe your proposed solution
 4. Consider alternative approaches
 5. Outline any potential drawbacks or trade-offs
@@ -59,7 +59,6 @@ Documentation improvements are highly valued:
 - Fix typos or clarify confusing sections
 - Add missing examples or use cases
 - Update outdated information
-- Translate documentation to other languages
 - Improve README, setup guides, or troubleshooting docs
 
 Small documentation fixes can be submitted directly as pull requests. For larger changes, open an issue first to discuss.
@@ -68,11 +67,11 @@ Small documentation fixes can be submitted directly as pull requests. For larger
 
 ### Prerequisites
 
-- Docker 20.10+
-- Docker Compose v2+
-- Running CrowdSec instance for testing
-- AbuseIPDB account (can use free tier)
+- Go 1.23 or higher (`go version`)
+- Docker 20.10+ and Docker Compose v2+
 - Git
+
+Go is required for local development and running tests. Docker is used for building the final image. A live CrowdSec instance is not required for unit tests -- all external dependencies are mocked.
 
 ### Local Development Environment
 
@@ -83,22 +82,24 @@ Small documentation fixes can be submitted directly as pull requests. For larger
    git remote add upstream https://github.com/developingchet/cs-abuseipdb-bouncer.git
    ```
 
-2. Create a development environment file:
+2. Download dependencies:
    ```bash
-   cp .env.example .env.dev
-   nano .env.dev
-   # Fill in your test API keys
+   go mod download
    ```
 
-3. Build and run:
+3. Run tests:
+   ```bash
+   go test ./...
+   ```
+
+4. Build the binary:
+   ```bash
+   go build -o bouncer ./cmd/bouncer/
+   ```
+
+5. Build the Docker image:
    ```bash
    docker compose build
-   docker compose up -d
-   ```
-
-4. Follow logs:
-   ```bash
-   docker logs -f abuseipdb-bouncer
    ```
 
 ### Making Changes
@@ -112,218 +113,191 @@ Small documentation fixes can be submitted directly as pull requests. For larger
 
 2. Make your changes following the coding standards below
 
-3. Test your changes (see Testing Requirements)
+3. Run tests and verify they pass:
+   ```bash
+   go test ./...
+   go test -race ./...
+   ```
 
 4. Commit with clear messages:
    ```bash
-   git add -A
+   git add internal/path/to/file.go
    git commit -m "Add scenario mapping for CVE-2024-12345"
    ```
 
 ## Coding Standards
 
-### Shell Script Guidelines
+### Go Guidelines
 
-The reporter script follows strict POSIX sh compatibility. Follow these rules:
+The project follows standard Go conventions enforced by `gofmt` and `go vet`.
 
-**1. POSIX Compliance**
-- Use `[` not `[[` for tests
-- No bash arrays (use space-separated strings)
-- No process substitution (use temp files)
-- Test with `shellcheck` and `dash`
+**Formatting**
 
-**2. Variable Declarations**
-- Declare all `local` variables at the top of functions
-- Assign variables separately from declaration when using command substitution:
-  ```bash
-  # Correct
-  local result
-  result=$(command)
-  
-  # Wrong - masks exit code under set -e
-  local result=$(command)
-  ```
+All code must be formatted with `gofmt`:
+```bash
+gofmt -w ./...
+```
 
-**3. Quoting**
-- Always quote variables: `"$var"`, not `$var`
-- Use `printf` instead of `echo` for formatted output
-- Quote in case patterns: `"$var")` not `$var)`
+**Error handling**
 
-**4. Error Handling**
-- Scripts should use `set -eu`
-- Check return codes explicitly where needed:
-  ```bash
-  if command; then
-      # success
-  else
-      # failure
-  fi
-  ```
+Return errors; do not panic. Wrap errors with context:
+```go
+if err := os.WriteFile(path, data, 0o600); err != nil {
+    return fmt.Errorf("writing cooldown file %s: %w", path, err)
+}
+```
 
-**5. Comments**
-- Comments should explain why, not what
-- Section headers use consistent formatting:
-  ```bash
-  # --- section name -----------------------------------------------
-  ```
+**Logging**
 
-**6. Logging**
-- Use the provided log functions: `info`, `warning`, `error`, `debug`
-- Log messages should be concise and include relevant context:
-  ```bash
-  info "reported ip=${ip} daily=${count}/${limit}"
-  ```
+Use the zerolog package-level logger. Include relevant fields as key-value pairs:
+```go
+log.Info().Str("ip", ip).Int("daily", count).Msg("reported")
+log.Debug().Str("filter", reason.Filter).Str("detail", reason.Detail).Msg("decision filtered")
+```
+
+Do not log API keys, passwords, or other secrets. Do not format variables into message strings -- use structured fields.
+
+**Tests**
+
+Every new exported function must have a test. Use table-driven tests and `t.TempDir()` for filesystem isolation:
+```go
+func TestMyFunction(t *testing.T) {
+    tests := []struct {
+        name  string
+        input string
+        want  string
+    }{
+        {"basic case", "input", "expected"},
+    }
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got := MyFunction(tt.input)
+            assert.Equal(t, tt.want, got)
+        })
+    }
+}
+```
+
+**No new dependencies without discussion**
+
+Adding a `go.mod` dependency requires prior discussion in the issue tracker. The dependency list is intentionally small to minimize supply chain risk.
 
 ### Scenario Mapping Guidelines
 
-When adding new scenario mappings to the `categories()` function:
+When adding new scenario mappings to `internal/sink/abuseipdb/mapper.go`:
 
-**1. Pattern Specificity**
-- Add specific patterns before generic ones
-- Use wildcard matching: `*pattern*`
-- Lowercase matching only (script lowercases input)
+**Pattern specificity**
+- Add specific patterns before generic ones -- the first match wins
+- Patterns are compared as substrings after lowercasing and stripping the author prefix
+- Test that your pattern does not shadow an existing higher-priority rule
 
-**2. Category Selection**
-- Choose the most specific AbuseIPDB category
-- Multiple categories are allowed (comma-separated)
+**Category selection**
+- Choose the most specific applicable AbuseIPDB category
+- Multiple categories are allowed
 - Refer to: https://www.abuseipdb.com/categories
 
-**3. Testing**
-- Test the mapping with a real decision:
-  ```bash
-  docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -s "yourauthor/your-scenario"
-  docker logs -f abuseipdb-bouncer | grep "reporting ip=203.0.113.42"
-  ```
-
-**Example:**
-```bash
-case "$s" in
-    # Existing patterns...
-    *your-pattern*)  printf '21,20' ;;  # Web App Attack, Exploited Host
-    # Generic patterns...
-esac
+**Add a test case** in `mapper_test.go`:
+```go
+{"crowdsecurity/my-new-scenario", []int{21, 20}},
 ```
 
 ### Docker and Compose Standards
 
-**1. Dockerfile**
-- Base on official images only
-- Minimize layer count
-- Use specific version tags (not `latest`)
-- Run as non-root user
+**Dockerfile**
+- Builder stage: `golang:1.23-alpine`
+- Runtime stage: `gcr.io/distroless/static-debian12:nonroot`
+- Build flags: `CGO_ENABLED=0 -ldflags="-s -w" -trimpath`
+- Do not add runtime dependencies (curl, wget, jq, etc.)
 
-**2. docker-compose.yml**
-- Do not include a `version` field — it is deprecated and ignored in Docker Compose v2
-- Include healthchecks
+**docker-compose.yml**
+- Do not include a `version` field -- it is deprecated and ignored in Docker Compose v2
+- Maintain `read_only: true`, `cap_drop: [ALL]`, and `no-new-privileges`
 - Provide clear comments for user-editable sections
-- Use named volumes for state
 
 ## Testing Requirements
 
+### Unit Tests
+
+All unit tests run without network access or external services:
+
+```bash
+# Run all tests
+go test ./...
+
+# With race detector
+go test -race ./...
+
+# Coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
 ### Manual Testing
 
-Before submitting a pull request, test your changes:
+Before submitting a pull request:
 
-**1. Startup Test**
+**Build test:**
 ```bash
 docker compose build
 docker compose up -d
 docker logs abuseipdb-bouncer
-# Verify: "reporter started" message appears
+# Verify: bouncer started message appears
 ```
 
-**2. Report Test**
+**Report test:**
 ```bash
-# Create a test decision
 docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test"
-
-# Verify report
-docker logs -f abuseipdb-bouncer | grep "203.0.113.42"
-# Should see: "reporting ip=203.0.113.42" and "reported ip=203.0.113.42"
-
-# Clean up
+docker logs -f abuseipdb-bouncer | grep 203.0.113.42
+# Verify: "reported" log line appears
 docker exec crowdsec cscli decisions delete -i 203.0.113.42
 ```
 
-**3. Filter Test**
+**Filter test:**
 ```bash
-# Test private IP filtering
+LOG_LEVEL=debug docker compose up -d --force-recreate abuseipdb-bouncer
 docker exec crowdsec cscli decisions add -i 192.168.1.1 -t ban -d 1h
-
-# Enable debug to see skip message
-echo "LOG_LEVEL=debug" >> .env
-docker compose up -d --force-recreate abuseipdb-bouncer
-docker logs -f abuseipdb-bouncer | grep "192.168.1.1"
-# Should see: "skip private ip=192.168.1.1"
+docker logs -f abuseipdb-bouncer | grep 192.168.1.1
+# Verify: "decision filtered" with filter=private-ip
 ```
-
-**4. Scenario Mapping Test**
-
-If you added a scenario mapping:
-```bash
-# Add a decision with your scenario
-docker exec crowdsec cscli decisions add -i 203.0.113.50 -t ban -d 1h -s "author/your-scenario"
-
-# Check the categories
-docker logs -f abuseipdb-bouncer | grep "your-scenario"
-# Should see: "scenario=your-scenario cats=X,Y"
-
-# Verify on AbuseIPDB
-curl -G https://api.abuseipdb.com/api/v2/check \
-  --data-urlencode "ipAddress=203.0.113.50" \
-  -H "Key: YOUR_KEY" | jq
-```
-
-### Automated Testing
-
-Currently, there are no automated tests. Contributions to add test infrastructure are welcome.
-
-**Potential areas:**
-- Shell script unit tests with `bats` (Bash Automated Testing System)
-- Integration tests with Docker Compose
-- Scenario mapping validation script
 
 ## Submitting Changes
 
 ### Pull Request Process
 
-1. **Update documentation** - If your change affects behavior, update relevant docs
+1. **Update documentation** -- if your change affects behavior, update the relevant docs
 
-2. **Test thoroughly** - Follow the testing requirements above
+2. **Test thoroughly** -- follow the testing requirements above
 
-3. **Update CHANGELOG** (if exists) - Add a line describing your change
-
-4. **Create pull request**:
+3. **Create pull request**:
    - Use a clear, descriptive title
    - Reference any related issues: "Fixes #123" or "Addresses #456"
    - Describe what changed and why
    - Include testing steps if applicable
 
-5. **Respond to feedback** - Maintainers may request changes
+4. **Respond to feedback** -- maintainers may request changes
 
-6. **Squash commits** (if requested) - Clean up commit history before merge
+5. **Squash commits** (if requested) -- clean up commit history before merge
 
 ### Pull Request Checklist
 
 Before submitting, verify:
 
-- [ ] Code follows the style guidelines
-- [ ] All scripts pass `shellcheck` (if modified shell scripts)
-- [ ] Manual testing completed successfully
-- [ ] Documentation updated (if applicable)
-- [ ] No sensitive data (API keys, IPs) in commits
+- [ ] Code is formatted with `gofmt`
+- [ ] `go test ./...` passes
+- [ ] `go test -race ./...` passes (no data races)
+- [ ] `go vet ./...` reports no issues
+- [ ] Documentation updated if applicable
+- [ ] No sensitive data (API keys, real IP addresses) in commits
 - [ ] Commit messages are clear and descriptive
 
 ### Review Process
 
 - Pull requests are reviewed by maintainers
-- Feedback is provided within 1 week (usually faster)
+- Feedback is provided within one week (usually faster)
 - Changes may be requested before merging
 - Once approved, maintainers will merge the PR
 
 ## Areas Needing Help
-
-We especially welcome contributions in these areas:
 
 ### Scenario Mappings
 
@@ -337,27 +311,18 @@ Add mappings for:
 
 - Translations (French, German, Spanish, etc.)
 - Integration guides (Kubernetes, Proxmox, Synology NAS)
-- Video tutorials
 - Blog posts or articles about the project
 
 ### Testing Infrastructure
 
-- Automated test suite
 - CI/CD pipeline (GitHub Actions)
 - Multi-architecture Docker builds (ARM, ARM64)
 
 ### Features
 
-- Prometheus metrics sidecar
-- Web UI for viewing stats
-- Custom category mapping via config file
-- Webhook notifications
-
-### Performance
-
-- Benchmarking script
-- Memory/CPU optimization
-- Large-scale deployment guidance
+- Prometheus metrics endpoint
+- Custom category mapping via configuration file
+- Webhook notifications for quota warnings
 
 ## Getting Help
 
