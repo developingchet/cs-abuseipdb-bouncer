@@ -150,6 +150,8 @@ security_opt:
 
 If you prefer not to download the file, simply omit that line — `cap_drop: ALL`, `read_only: true`, and the distroless nonroot image still provide strong isolation without it.
 
+> If the container crash-loops with `operation not permitted`, the installed profile may be outdated. See [Troubleshooting](https://github.com/developingchet/cs-abuseipdb-bouncer/blob/main/docs/TROUBLESHOOTING.md#seccomp-profile-blocks-container-startup) for the fix.
+
 ### Log Redaction
 
 API keys and Bearer tokens are automatically redacted from all log output before they reach stderr. The regex patterns match 80-character hex strings (AbuseIPDB / CrowdSec key format) and `Bearer <token>` values.

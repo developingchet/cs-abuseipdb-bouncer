@@ -412,6 +412,17 @@ docker run \
 
 The seccomp profile is enforced on all modern Linux kernels (4.8+). On Docker Desktop for macOS and Windows the profile is not applied (the host kernel does not support Linux seccomp), but Docker will still fail to start the container if the file path does not exist — download the file or remove the line.
 
+#### If the container fails to start with "operation not permitted"
+
+If the container crash-loops immediately, the seccomp profile on your host may be
+outdated. Error patterns to look for:
+
+    error closing exec fds: readdirent fsmount:fscontext:proc/thread-self/fd/: operation not permitted
+    OCI runtime start failed [...] reopen exec fifo [...] operation not permitted
+
+See [Seccomp profile blocks container startup](TROUBLESHOOTING.md#seccomp-profile-blocks-container-startup)
+for diagnosis steps and the fix.
+
 ### Docker Network Isolation
 
 To restrict the bouncer's network access to only the LAPI and AbuseIPDB:

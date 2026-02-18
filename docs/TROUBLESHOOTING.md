@@ -5,6 +5,7 @@ Common issues and solutions for the CrowdSec AbuseIPDB Bouncer.
 ## Table of Contents
 
 - [Container Won't Start](#container-wont-start)
+  - [Seccomp profile blocks container startup](#seccomp-profile-blocks-container-startup)
 - [No Decisions Being Reported](#no-decisions-being-reported)
 - [Authentication Errors](#authentication-errors)
 - [Rate Limiting](#rate-limiting)
@@ -82,6 +83,40 @@ docker compose up -d
 ```
 
 **Fresh installs:** No action required — the image now embeds `/data` owned by UID 65532 and Docker seeds new volumes with that ownership automatically.
+
+### Seccomp profile blocks container startup
+
+**Symptom:** Container crash-loops immediately and logs show one of:
+
+```
+error closing exec fds: readdirent fsmount:fscontext:proc/thread-self/fd/: operation not permitted
+OCI runtime start failed [...] reopen exec fifo [...] operation not permitted
+```
+
+**Why this happens:** Docker's OCI runtime (`runc`) applies the seccomp filter to the container process *before* `execve` hands control to the Go binary. Every syscall runc makes during its own init — enumerating file descriptors in `/proc/thread-self/fd/`, closing them, resolving symlinks, checking capabilities, and finally calling `execve` itself — runs under the filter. If any of those syscalls are absent from the allowlist, the container crashes before the Go binary ever runs.
+
+**Diagnosis:** Run the static validator locally:
+
+```bash
+bash scripts/validate-seccomp.sh ./security/seccomp-bouncer.json
+```
+
+A `PASS` result means the profile file on disk is correct. If you see `MISS` lines, the host's copy of the profile is outdated.
+
+**Fix:** Download the current profile from GitHub and recreate the container:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/developingchet/cs-abuseipdb-bouncer/main/security/seccomp-bouncer.json \
+  -o ./security/seccomp-bouncer.json
+
+docker compose up -d --force-recreate cs-abuseipdb-bouncer
+docker logs cs-abuseipdb-bouncer
+```
+
+**Note on `close_range`:** This syscall requires Linux 5.9+. On older kernels runc falls back to closing FDs one at a time (`ENOSYS` is handled gracefully), so allowing `close_range` in the profile is safe across all kernel versions — it simply never gets called on kernels that don't support it.
+
+**Prevention:** The CI `test-seccomp` job (`.github/workflows/ci.yml`) runs a fast Alpine container under the profile before every full image build, catching missing syscalls within seconds.
 
 ---
 

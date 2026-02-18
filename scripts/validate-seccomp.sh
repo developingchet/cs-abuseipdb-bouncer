@@ -22,10 +22,24 @@ PROFILE="${1:-./security/seccomp-bouncer.json}"
 # with a comment so reviewers understand the blast radius of a removal.
 
 REQUIRED_SYSCALLS=(
-  # ── runc startup (CRITICAL — missing any of these crashes the container
-  #    before the Go binary ever runs, producing "reopen exec fifo" errors)
-  "statx"          # exec fifo magiclink safety check (mount ID)
-  "prctl"          # runc process setup + Go runtime
+  # ── runc container init (CRITICAL — all of these are called BEFORE the Go
+  #    binary runs because runc applies the seccomp filter to the container
+  #    process before execve hands off to the entrypoint. Missing any of these
+  #    produces "operation not permitted" errors and crash-loops the container.)
+  "statx"            # exec fifo magiclink safety check (mount ID)
+  "prctl"            # runc process setup + Go runtime
+  "execve"           # runc calls execve to launch the entrypoint UNDER the filter
+  "execveat"         # alternate execve form used by some kernel/runc versions
+  "close_range"      # runc closes inherited FDs atomically (Linux 5.9+, ENOSYS fallback on older)
+  "getdents64"       # runc reads /proc/thread-self/fd/ to enumerate FDs before closing them
+  "readlink"         # runc resolves /proc/self/exe symlink during init
+  "readlinkat"       # alternate readlink form used in newer runc builds
+  "set_tid_address"  # Go runtime goroutine-0 bootstrap
+  "getuid"           # runc capability check + Go os/user init
+  "geteuid"          # runc capability check + Go os/user init
+  "getgid"           # runc capability check + Go os/user init
+  "getegid"          # runc capability check + Go os/user init
+  "capget"           # runc reads process capabilities after --cap-drop ALL
 
   # ── File I/O
   "read"
@@ -56,6 +70,9 @@ REQUIRED_SYSCALLS=(
   "fcntl"          # Go net + file descriptor ops
   "ioctl"          # Go net socket ioctls
   "flock"          # bbolt advisory file lock
+  "getdents64"     # runc enumerates /proc/thread-self/fd/ before closing inherited FDs
+  "readlink"       # runc resolves /proc/self/exe symlink during init
+  "readlinkat"     # alternate readlink form used in newer runc builds
 
   # ── Memory management
   "mmap"           # bbolt memory-mapped pages

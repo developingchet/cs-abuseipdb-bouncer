@@ -50,6 +50,17 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Sanity-check seccomp profile with Alpine (fast, no build)
+        run: |
+          # Exercises getdents64 (ls reads /proc/self/fd/) and execve (launching /bin/ls).
+          # Fails in <5 s if these are missing, saving the 3-5 min full image build.
+          docker run --rm \
+            --security-opt "seccomp:./security/seccomp-bouncer.json" \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            alpine:latest \
+            ls /proc/self/fd
+
       - name: Build image (linux/amd64)
         uses: docker/build-push-action@v5
         with:
@@ -89,7 +100,7 @@ jobs:
 
           # FAIL: runc was blocked by seccomp before the Go binary ran.
           # This is the exact error produced by a missing syscall in the profile.
-          if echo "$output" | grep -q "reopen exec fifo"; then
+          if echo "$output" | grep -qE "reopen exec fifo|error closing exec fds"; then
             echo ""
             echo "FAIL: seccomp profile blocked container startup (runc exec fifo error)."
             echo "      A required syscall is missing from security/seccomp-bouncer.json."

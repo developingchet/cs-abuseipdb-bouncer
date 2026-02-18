@@ -35,7 +35,10 @@
         "getcwd",
         "fcntl",
         "ioctl",
-        "flock"
+        "flock",
+        "getdents64",
+        "readlink",
+        "readlinkat"
       ],
       "action": "SCMP_ACT_ALLOW",
       "comment": "File I/O"
@@ -125,7 +128,16 @@
         "dup3",
         "getrandom",
         "arch_prctl",
-        "prctl"
+        "prctl",
+        "execve",
+        "execveat",
+        "close_range",
+        "set_tid_address",
+        "getuid",
+        "geteuid",
+        "getgid",
+        "getegid",
+        "capget"
       ],
       "action": "SCMP_ACT_ALLOW",
       "comment": "Process"
