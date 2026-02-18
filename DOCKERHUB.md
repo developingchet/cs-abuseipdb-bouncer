@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/382bd99f-9408-4baa-ba02-7646876a44be" width="480" alt="CrowdSec AbuseIPDB Bouncer Logo">
-</p>
-
 # cs-abuseipdb-bouncer
 
 A production-ready, security-hardened CrowdSec bouncer that reports malicious IPs to AbuseIPDB in real-time. Single static Go binary, distroless container, Prometheus metrics.
