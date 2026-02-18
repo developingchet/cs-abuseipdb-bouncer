@@ -368,14 +368,37 @@ Category 2 (DNS Poisoning) is defined but not emitted by any current pattern. Th
 
 The repository ships `security/seccomp-bouncer.json`, a minimal OCI seccomp allowlist that blocks all syscalls not required by the bouncer binary.
 
-**docker-compose.yml:**
+> **Important:** The seccomp profile is read from the **host filesystem** at `docker compose up` / `docker run` time. It is not embedded in the Docker image. If the file does not exist at the path specified, Docker will refuse to start the container with an error like `no such file or directory`.
+
+**If you cloned the repository** the file is already present under `security/` and the default compose file path (`./security/seccomp-bouncer.json`) works without any extra steps.
+
+**If you pulled the image directly** (`docker pull`) without a local clone, download the file first:
+
+```bash
+mkdir -p security
+curl -fsSL \
+  https://raw.githubusercontent.com/developingchet/cs-abuseipdb-bouncer/main/security/seccomp-bouncer.json \
+  -o security/seccomp-bouncer.json
+```
+
+Then run compose or `docker run` from the same directory.
+
+**If you prefer not to use the seccomp profile**, remove that line from `security_opt` — the container is still hardened by `cap_drop: ALL`, `read_only: true`, `no-new-privileges`, and the distroless nonroot base image:
+
+```yaml
+security_opt:
+  - no-new-privileges:true
+  # seccomp line omitted — acceptable without a local copy of the profile
+```
+
+**docker-compose.yml (with profile):**
 ```yaml
 security_opt:
   - no-new-privileges:true
   - "seccomp:./security/seccomp-bouncer.json"
 ```
 
-**docker run:**
+**docker run (with profile):**
 ```bash
 docker run \
   --security-opt no-new-privileges \
@@ -387,7 +410,7 @@ docker run \
   developingchet/cs-abuseipdb-bouncer:latest
 ```
 
-The seccomp profile is supported on all modern Linux kernels (4.8+). Docker on macOS and Windows does not apply Linux seccomp profiles (they are silently ignored on non-Linux hosts).
+The seccomp profile is enforced on all modern Linux kernels (4.8+). On Docker Desktop for macOS and Windows the profile is not applied (the host kernel does not support Linux seccomp), but Docker will still fail to start the container if the file path does not exist — download the file or remove the line.
 
 ### Docker Network Isolation
 

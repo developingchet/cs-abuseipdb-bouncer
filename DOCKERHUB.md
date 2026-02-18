@@ -127,13 +127,28 @@ The container image is built `FROM gcr.io/distroless/static-debian12:nonroot`. T
 
 ### Seccomp Profile
 
-The repository ships `security/seccomp-bouncer.json`, a minimal OCI seccomp profile that allows only the syscalls the binary actually needs. Apply it in your compose file:
+The repository ships `security/seccomp-bouncer.json`, a minimal OCI seccomp profile that allows only the syscalls the binary actually needs.
+
+> **The file must exist on your host.** It is read from the host filesystem at container start — it is not embedded in the image. Docker will refuse to start if the path does not exist.
+
+**If you cloned the repo**, `./security/seccomp-bouncer.json` is already present. Otherwise, download it first:
+
+```bash
+mkdir -p security
+curl -fsSL \
+  https://raw.githubusercontent.com/developingchet/cs-abuseipdb-bouncer/main/security/seccomp-bouncer.json \
+  -o security/seccomp-bouncer.json
+```
+
+Then apply it in your compose file:
 
 ```yaml
 security_opt:
   - no-new-privileges:true
   - "seccomp:./security/seccomp-bouncer.json"
 ```
+
+If you prefer not to download the file, simply omit that line — `cap_drop: ALL`, `read_only: true`, and the distroless nonroot image still provide strong isolation without it.
 
 ### Log Redaction
 
