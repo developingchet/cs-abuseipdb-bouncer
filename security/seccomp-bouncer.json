@@ -9,6 +9,10 @@
       "names": [
         "read",
         "write",
+        "pread64",
+        "pwrite64",
+        "readv",
+        "writev",
         "open",
         "openat",
         "openat2",
@@ -16,6 +20,7 @@
         "stat",
         "fstat",
         "lstat",
+        "statx",
         "fstatfs",
         "lseek",
         "fsync",
@@ -27,7 +32,10 @@
         "access",
         "faccessat",
         "newfstatat",
-        "getcwd"
+        "getcwd",
+        "fcntl",
+        "ioctl",
+        "flock"
       ],
       "action": "SCMP_ACT_ALLOW",
       "comment": "File I/O"
@@ -39,6 +47,7 @@
         "munmap",
         "mremap",
         "madvise",
+        "msync",
         "brk"
       ],
       "action": "SCMP_ACT_ALLOW",
@@ -86,6 +95,7 @@
         "set_robust_list",
         "get_robust_list",
         "sched_yield",
+        "sched_getaffinity",
         "tgkill",
         "rt_sigaction",
         "rt_sigprocmask",
@@ -114,7 +124,8 @@
         "dup2",
         "dup3",
         "getrandom",
-        "arch_prctl"
+        "arch_prctl",
+        "prctl"
       ],
       "action": "SCMP_ACT_ALLOW",
       "comment": "Process"
