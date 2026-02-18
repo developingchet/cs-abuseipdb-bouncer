@@ -2,11 +2,10 @@
   <img src="https://github.com/user-attachments/assets/382bd99f-9408-4baa-ba02-7646876a44be"  width="590" alt="CrowdSec AbuseIPDB Bouncer Logo" style="max-width: 100%; height: auto;">
 </p>
 
+# CrowdSec AbuseIPDB Bouncer
 [![Build](https://github.com/developingchet/cs-abuseipdb-bouncer/actions/workflows/release.yml/badge.svg)](https://github.com/developingchet/cs-abuseipdb-bouncer/actions/workflows/release.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/developingchet/cs-abuseipdb-bouncer)](https://hub.docker.com/r/developingchet/cs-abuseipdb-bouncer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
-# CrowdSec AbuseIPDB Bouncer
 
 A production-ready, security-hardened CrowdSec bouncer that automatically reports malicious IP addresses to AbuseIPDB in real-time.
 
@@ -63,10 +62,10 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 │    9. per-IP cooldown check  │
 └────────┬─────────────────────┘
          │                       ┌──────────────────────────┐
-         │ HTTPS POST             │  Prometheus :9090        │
-         │ /api/v2/report         │  GET /metrics            │
-         │ retry: 3 attempts      │  GET /healthz            │
-         │ 5s/10s backoff         │  GET /readyz             │
+         │ HTTPS POST            │  Prometheus :9090        │
+         │ /api/v2/report        │  GET /metrics            │
+         │ retry: 3 attempts     │  GET /healthz            │
+         │ 5s/10s backoff        │  GET /readyz             │
          │                       └──────────────────────────┘
          v
 ┌──────────────────────────────┐
