@@ -1,6 +1,6 @@
 module github.com/developingchet/cs-abuseipdb-bouncer
 
-go 1.23.0
+go 1.24
 
 require (
 	github.com/crowdsecurity/go-cs-bouncer v0.0.10
@@ -24,7 +24,7 @@ require (
 	github.com/crowdsecurity/crowdsec v1.6.4 // indirect
 	github.com/crowdsecurity/go-cs-lib v0.0.15 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/expr-lang/expr v1.16.9 // indirect
+	github.com/expr-lang/expr v1.17.7 // indirect
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-openapi/analysis v0.21.4 // indirect
@@ -38,7 +38,7 @@ require (
 	github.com/go-openapi/validate v0.22.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/goccy/go-yaml v1.11.0 // indirect
-	github.com/golang-jwt/jwt/v4 v4.5.0 // indirect
+	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
