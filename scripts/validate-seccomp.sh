@@ -111,7 +111,8 @@ REQUIRED_SYSCALLS=(
   "eventfd2"
 
   # ── Threading and synchronisation
-  "clone3"         # Go goroutine creation
+  "clone"          # Go runtime newosproc (SYS_CLONE=56) — creates OS threads
+  "clone3"         # clone3 variant (SYS_CLONE3=435) — newer kernels
   "futex"          # Go sync primitives
   "set_robust_list"
   "get_robust_list"

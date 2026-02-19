@@ -93,6 +93,7 @@
     },
     {
       "names": [
+        "clone",
         "clone3",
         "futex",
         "set_robust_list",
