@@ -41,6 +41,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.PollInterval)
 	assert.Equal(t, 15*time.Minute, cfg.CooldownDuration)
 	assert.Equal(t, "/data", cfg.DataDir)
+	assert.True(t, cfg.MetricsEnabled)
 	assert.Equal(t, ":9090", cfg.MetricsAddr)
 	assert.False(t, cfg.TLSSkipVerify)
 }
@@ -92,6 +93,47 @@ func TestLoad_MetricsDisabled(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, "", cfg.MetricsAddr)
+}
+
+func TestLoad_MetricsEnabled(t *testing.T) {
+	t.Run("disabled via flag", func(t *testing.T) {
+		env := validEnv()
+		env["METRICS_ENABLED"] = "false"
+		setEnv(t, env)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "", cfg.MetricsAddr)
+	})
+
+	t.Run("flag overrides explicit addr", func(t *testing.T) {
+		env := validEnv()
+		env["METRICS_ENABLED"] = "false"
+		env["METRICS_ADDR"] = ":9091"
+		setEnv(t, env)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "", cfg.MetricsAddr)
+	})
+
+	t.Run("enabled explicitly", func(t *testing.T) {
+		env := validEnv()
+		env["METRICS_ENABLED"] = "true"
+		setEnv(t, env)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, ":9090", cfg.MetricsAddr)
+	})
+
+	t.Run("unset defaults to enabled", func(t *testing.T) {
+		setEnv(t, validEnv())
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, ":9090", cfg.MetricsAddr)
+	})
 }
 
 func TestLoad_MissingRequired(t *testing.T) {

@@ -31,7 +31,8 @@ type Config struct {
 	LogFormat        string        `koanf:"log_format"`
 	PollInterval     time.Duration `koanf:"poll_interval"`
 	CooldownDuration time.Duration `koanf:"cooldown_duration"`
-	DataDir          string        `koanf:"data_dir"`     // falls back to STATE_DIR for legacy compatibility
+	DataDir          string        `koanf:"data_dir"`          // falls back to STATE_DIR for legacy compatibility
+	MetricsEnabled   bool          `koanf:"metrics_enabled"`
 	MetricsAddr      string        `koanf:"metrics_addr"` // "" = disabled
 	TLSSkipVerify    bool          `koanf:"tls_skip_verify"`
 
@@ -59,6 +60,7 @@ var defaults = map[string]any{
 	"poll_interval":         30 * time.Second,
 	"cooldown_duration":     15 * time.Minute,
 	"data_dir":              "/data",
+	"metrics_enabled":       true,
 	"metrics_addr":          ":9090",
 	"tls_skip_verify":       false,
 	"worker_count":          4,
@@ -131,6 +133,11 @@ func Load() (*Config, error) {
 	}
 	if v := resolveFileSecret("ABUSEIPDB_API_KEY"); v != "" {
 		cfg.AbuseIPDBAPIKey = v
+	}
+
+	// METRICS_ENABLED=false disables the server regardless of METRICS_ADDR.
+	if !cfg.MetricsEnabled {
+		cfg.MetricsAddr = ""
 	}
 
 	if err := cfg.validate(); err != nil {

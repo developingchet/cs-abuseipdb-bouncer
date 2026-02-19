@@ -167,12 +167,22 @@ Using ephemeral container storage means the daily quota counter and per-IP coold
 
 The bouncer also accepts the legacy `STATE_DIR` environment variable if `DATA_DIR` is not set, for backwards-compatibility with v1.x deployments.
 
+#### METRICS_ENABLED
+
+**Type:** Boolean
+**Default:** `true`
+**Options:** `true`, `false`, `1`, `0`, `yes`, `no`
+
+Set to `false` to disable the built-in HTTP server entirely. No port is opened and the
+`/metrics`, `/healthz`, and `/readyz` endpoints are unavailable. This takes precedence
+over `METRICS_ADDR` — even if an address is configured, the server will not start.
+
 #### METRICS_ADDR
 
 **Type:** String (host:port)
 **Default:** `:9090`
 
-Address on which the built-in HTTP server listens for Prometheus metrics and Kubernetes health probes.
+Address on which the built-in HTTP server listens for Prometheus metrics and Kubernetes health probes. Ignored when `METRICS_ENABLED=false`.
 
 | Endpoint | Description |
 |----------|-------------|
