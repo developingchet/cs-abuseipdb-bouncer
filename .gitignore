@@ -101,6 +101,7 @@ docker-compose.local.yml
 .cursor/
 .aider*
 .copilot/
+CLAUDE.md
 
 # ------------------------------------------------------------------------------
 # OPERATING SYSTEM
