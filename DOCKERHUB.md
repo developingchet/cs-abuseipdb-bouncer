@@ -71,7 +71,8 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_DIR` | `/data` | Directory for `state.db` (bbolt database). Mount a named volume here. |
-| `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. Set to empty string to disable. |
+| `METRICS_ENABLED` | `true` | Set to `false` to disable the `/metrics`, `/healthz`, `/readyz` HTTP server entirely (no port opened). Takes precedence over `METRICS_ADDR`. |
+| `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. Ignored when `METRICS_ENABLED=false`. Set to empty string to disable. |
 | `CONFIG_FILE` | _(none)_ | Optional path to a YAML config file (alternative / supplement to env vars). |
 | `ABUSEIPDB_DAILY_LIMIT` | `1000` | Daily report quota (free=1000, webmaster=3000, premium=50000). |
 | `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs). Uses one extra API call per decision. |
