@@ -1,9 +1,11 @@
 package decision
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsPrivate(t *testing.T) {
@@ -86,6 +88,119 @@ func TestIsPrivate(t *testing.T) {
 			result := IsPrivate(tt.ip)
 			assert.Equal(t, tt.expected, result, "IsPrivate(%q) = %v, want %v (%s)",
 				tt.ip, result, tt.expected, tt.reason)
+		})
+	}
+}
+
+func TestWhitelistFilter(t *testing.T) {
+	tests := []struct {
+		input    string
+		prefixes []netip.Prefix
+		skip     bool
+		matching string // matching prefix string expected in Detail (skip cases only)
+		reason   string
+	}{
+		{
+			input:    "203.0.113.42",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     true,
+			matching: "203.0.113.0/24",
+			reason:   "IP inside CIDR range",
+		},
+		{
+			input:    "203.0.113.255",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     true,
+			matching: "203.0.113.0/24",
+			reason:   "IP at CIDR boundary",
+		},
+		{
+			input:    "203.0.114.1",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     false,
+			reason:   "IP just outside CIDR",
+		},
+		{
+			input:    "198.51.100.7",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.7/32")},
+			skip:     true,
+			matching: "198.51.100.7/32",
+			reason:   "Exact single-IP prefix",
+		},
+		{
+			input:    "2001:db8::1",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+			skip:     true,
+			matching: "2001:db8::/32",
+			reason:   "IPv6 address in range",
+		},
+		{
+			input:    "::ffff:203.0.113.42",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     true,
+			matching: "203.0.113.0/24",
+			reason:   "IPv4-in-IPv6 form",
+		},
+		{
+			input:    "203.0.113.42/32",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     true,
+			matching: "203.0.113.0/24",
+			reason:   "Decision value with CIDR notation",
+		},
+		{
+			input:    "not-an-ip",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     false,
+			reason:   "Invalid decision IP",
+		},
+		{
+			input:    "203.0.113.42",
+			prefixes: []netip.Prefix{},
+			skip:     false,
+			reason:   "Empty prefix list",
+		},
+		{
+			input: "10.0.0.1",
+			prefixes: []netip.Prefix{
+				netip.MustParsePrefix("10.0.0.0/8"),
+				netip.MustParsePrefix("192.168.0.0/16"),
+			},
+			skip:     true,
+			matching: "10.0.0.0/8",
+			reason:   "Multiple prefixes, first matches",
+		},
+		{
+			input: "192.168.1.1",
+			prefixes: []netip.Prefix{
+				netip.MustParsePrefix("10.0.0.0/8"),
+				netip.MustParsePrefix("192.168.0.0/16"),
+			},
+			skip:     true,
+			matching: "192.168.0.0/16",
+			reason:   "Multiple prefixes, second matches",
+		},
+		{
+			input:    "8.8.8.8",
+			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+			skip:     false,
+			reason:   "No prefix matches",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			dec := &Decision{Value: tt.input}
+			f := WhitelistFilter(tt.prefixes)
+			result := f(dec)
+			if tt.skip {
+				require.NotNil(t, result, "expected decision to be skipped")
+				assert.Equal(t, "whitelist", result.Filter)
+				assert.Contains(t, result.Detail, tt.input)
+				assert.Contains(t, result.Detail, tt.matching)
+			} else {
+				assert.Nil(t, result, "expected decision to pass")
+			}
 		})
 	}
 }

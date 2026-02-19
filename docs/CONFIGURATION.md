@@ -47,6 +47,10 @@ docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 
 The key is shown only once — copy it immediately. This key grants read access to all CrowdSec decisions; treat it as a credential. The value is automatically redacted from log output by the built-in `RedactWriter`.
 
+**Docker secrets / file alternative:** Set `CROWDSEC_LAPI_KEY_FILE` to the path of a
+file containing the key (e.g. a Docker Swarm secret mounted at
+`/run/secrets/crowdsec_lapi_key`). The direct env var takes precedence if both are set.
+
 #### ABUSEIPDB_API_KEY
 
 **Type:** String
@@ -58,6 +62,10 @@ The AbuseIPDB v2 API key for the `/report` and `/check` endpoints.
 **Obtain:** https://www.abuseipdb.com/account/api
 
 The value is automatically redacted from log output by the built-in `RedactWriter`.
+
+**Docker secrets / file alternative:** Set `ABUSEIPDB_API_KEY_FILE` to the path of a
+file containing the key (e.g. a Docker Swarm secret mounted at
+`/run/secrets/abuseipdb_api_key`). The direct env var takes precedence if both are set.
 
 **Subscription tiers:**
 
@@ -109,6 +117,33 @@ Skip decisions shorter than this duration. The decision's `duration` field is pa
 | `300` or `5m` | Skip bans shorter than 5 minutes (typical test decisions) |
 | `3600` or `1h` | Report only bans of 1 hour or longer |
 | `86400` or `24h` | Report only bans of 24 hours or longer |
+
+#### IP_WHITELIST
+
+**Type:** String (comma-separated IPs / CIDRs)
+**Default:** _(unset — no whitelist)_
+
+IPs and ranges that should never be reported to AbuseIPDB, even when CrowdSec
+issues a ban decision for them. Useful for your own infrastructure, monitoring
+probes, or trusted partner ranges.
+
+Accepted formats (mix freely):
+- Single IPv4: `203.0.113.42`
+- IPv4 CIDR: `203.0.113.0/24`
+- Single IPv6: `2001:db8::1`
+- IPv6 CIDR: `2001:db8::/32`
+
+Host bits are silently masked (`192.0.2.5/24` → `192.0.2.0/24`).
+Whitespace around commas is ignored.
+
+```env
+IP_WHITELIST=203.0.113.0/24,198.51.100.42,2001:db8::/32
+```
+
+Matching decisions are counted in the
+`cs_abuseipdb_decisions_skipped_total{filter="whitelist"}` Prometheus metric.
+
+Invalid entries cause a startup validation error listing the bad values.
 
 ---
 

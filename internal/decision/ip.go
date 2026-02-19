@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 )
@@ -38,4 +39,27 @@ func IsPrivate(ipStr string) bool {
 		}
 	}
 	return false
+}
+
+// WhitelistFilter returns a Filter that skips decisions whose IP falls within
+// any of the provided prefixes. Call it conditionally (only when prefixes is
+// non-empty) so the hot path has zero overhead when no whitelist is configured.
+func WhitelistFilter(prefixes []netip.Prefix) Filter {
+	return func(d *Decision) *SkipReason {
+		ipStr := d.Value
+		if idx := strings.IndexByte(ipStr, '/'); idx != -1 {
+			ipStr = ipStr[:idx]
+		}
+		addr, err := netip.ParseAddr(ipStr)
+		if err != nil {
+			return nil // unparseable — let ValueRequired handle it
+		}
+		addr = addr.Unmap() // normalise IPv4-in-IPv6
+		for _, pfx := range prefixes {
+			if pfx.Contains(addr) {
+				return &SkipReason{Filter: "whitelist", Detail: fmt.Sprintf("ip=%s matches %s", d.Value, pfx)}
+			}
+		}
+		return nil
+	}
 }

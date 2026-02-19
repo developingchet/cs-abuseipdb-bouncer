@@ -87,15 +87,19 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 // (filters 1–7). Quota and cooldown checks are omitted here because they are
 // handled atomically inside the worker pool.
 func buildPreQueueFilters(cfg *config.Config) []decision.Filter {
-	return []decision.Filter{
+	filters := []decision.Filter{
 		decision.ActionFilter("add"),
 		decision.ScenarioExclude("impossible-travel", "impossible_travel"),
 		decision.OriginAllow("crowdsec", "cscli"),
 		decision.ScopeAllow("ip"),
 		decision.ValueRequired(),
 		decision.PrivateIPReject(),
-		decision.MinDurationFilter(cfg.MinDuration),
 	}
+	if len(cfg.Whitelist) > 0 {
+		filters = append(filters, decision.WhitelistFilter(cfg.Whitelist))
+	}
+	filters = append(filters, decision.MinDurationFilter(cfg.MinDuration))
+	return filters
 }
 
 // buildFilters constructs the full ordered filter pipeline including quota and

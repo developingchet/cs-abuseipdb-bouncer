@@ -159,6 +159,7 @@ Look for `"msg":"decision filtered"` log lines. The `filter` field identifies wh
 | `scope` | Range, ASN, or country scope | AbuseIPDB only accepts single IPs |
 | `value` | Empty IP value | Indicates a malformed decision in CrowdSec |
 | `private-ip` | Private/reserved IP range | Expected -- private IPs are not reported |
+| `whitelist` | IP is in `IP_WHITELIST` | Expected — trusted range you configured |
 | `min-duration` | Decision duration is below ABUSEIPDB_MIN_DURATION | Lower or disable ABUSEIPDB_MIN_DURATION |
 | `quota` | Daily limit reached | Wait for UTC midnight reset or increase ABUSEIPDB_DAILY_LIMIT |
 | `cooldown` | IP was reported within the cooldown window | Normal -- prevents duplicate reports |

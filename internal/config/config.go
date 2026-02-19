@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -38,6 +39,12 @@ type Config struct {
 	WorkerCount     int           `koanf:"worker_count"`
 	WorkerBuffer    int           `koanf:"worker_buffer"`
 	JanitorInterval time.Duration `koanf:"janitor_interval"`
+
+	// Whitelist
+	// Raw comma-separated CIDR/IP string from IP_WHITELIST env var.
+	WhitelistCIDR string `koanf:"ip_whitelist"`
+	// Parsed at startup from WhitelistCIDR. Not loaded by koanf.
+	Whitelist []netip.Prefix
 }
 
 // defaults is the lowest-priority layer.
@@ -118,6 +125,14 @@ func Load() (*Config, error) {
 		cfg.DataDir = os.Getenv("STATE_DIR")
 	}
 
+	// Resolve secrets from files (Docker / Kubernetes secrets).
+	if v := resolveFileSecret("CROWDSEC_LAPI_KEY"); v != "" {
+		cfg.LAPIKey = v
+	}
+	if v := resolveFileSecret("ABUSEIPDB_API_KEY"); v != "" {
+		cfg.AbuseIPDBAPIKey = v
+	}
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -165,10 +180,77 @@ func (c *Config) validate() error {
 		errs = append(errs, "JANITOR_INTERVAL must be at least 30s")
 	}
 
+	if c.WhitelistCIDR != "" {
+		parsed, err := parseIPWhitelist(c.WhitelistCIDR)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("IP_WHITELIST: %v", err))
+		} else {
+			c.Whitelist = parsed
+		}
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("%d configuration error(s):\n  - %s", len(errs), strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// parseIPWhitelist parses a comma-separated list of IPs and CIDRs into a slice
+// of netip.Prefix. Single IPs are promoted to /32 (IPv4) or /128 (IPv6).
+// Host bits in CIDR notation are masked (e.g. 192.0.2.5/24 → 192.0.2.0/24).
+// Returns an error listing all invalid entries if any are found.
+func parseIPWhitelist(raw string) ([]netip.Prefix, error) {
+	parts := strings.Split(raw, ",")
+	var prefixes []netip.Prefix
+	var bad []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "/") {
+			pfx, err := netip.ParsePrefix(p)
+			if err != nil {
+				bad = append(bad, p)
+				continue
+			}
+			prefixes = append(prefixes, pfx.Masked())
+		} else {
+			addr, err := netip.ParseAddr(p)
+			if err != nil {
+				bad = append(bad, p)
+				continue
+			}
+			bits := 32
+			if addr.Is6() {
+				bits = 128
+			}
+			prefixes = append(prefixes, netip.PrefixFrom(addr, bits))
+		}
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("invalid entries: %s", strings.Join(bad, ", "))
+	}
+	return prefixes, nil
+}
+
+// resolveFileSecret returns the value of envKey if set and non-empty.
+// If envKey is unset or empty, it falls back to reading the file at
+// envKey+"_FILE" (Docker / Kubernetes secrets convention).
+// Returns empty string if neither source provides a value.
+func resolveFileSecret(envKey string) string {
+	if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+		return v
+	}
+	path := strings.TrimSpace(os.Getenv(envKey + "_FILE"))
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // envBool is kept for the TestEnvBool test.

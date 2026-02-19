@@ -1,7 +1,9 @@
 package config
 
 import (
+	"net/netip"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -175,6 +177,197 @@ func TestLoad_DataDir_ValidPathAccepted(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	assert.Equal(t, "/data", cfg.DataDir)
+}
+
+func TestParseIPWhitelist(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		want        []netip.Prefix
+		wantErr     bool
+		errContains []string
+	}{
+		{
+			name:  "Single IPv4",
+			input: "203.0.113.42",
+			want:  []netip.Prefix{netip.MustParsePrefix("203.0.113.42/32")},
+		},
+		{
+			name:  "Single IPv6",
+			input: "2001:db8::1",
+			want:  []netip.Prefix{netip.MustParsePrefix("2001:db8::1/128")},
+		},
+		{
+			name:  "IPv4 CIDR",
+			input: "203.0.113.0/24",
+			want:  []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+		},
+		{
+			name:  "CIDR with host bits masked",
+			input: "203.0.113.5/24",
+			want:  []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+		},
+		{
+			name:  "Mixed valid entries",
+			input: "203.0.113.0/24, 198.51.100.7",
+			want: []netip.Prefix{
+				netip.MustParsePrefix("203.0.113.0/24"),
+				netip.MustParsePrefix("198.51.100.7/32"),
+			},
+		},
+		{
+			name:        "Single invalid",
+			input:       "notanip",
+			wantErr:     true,
+			errContains: []string{"notanip"},
+		},
+		{
+			name:        "Mixed valid and invalid",
+			input:       "203.0.113.0/24,bad,198.51.100.7,also-bad",
+			wantErr:     true,
+			errContains: []string{"bad", "also-bad"},
+		},
+		{
+			name:  "Empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "Only commas and spaces",
+			input: " , , ",
+			want:  nil,
+		},
+		{
+			name:  "IPv6 CIDR",
+			input: "2001:db8::/32",
+			want:  []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseIPWhitelist(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				for _, s := range tt.errContains {
+					assert.Contains(t, err.Error(), s)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestLoad_Whitelist(t *testing.T) {
+	t.Run("valid whitelist is parsed", func(t *testing.T) {
+		env := validEnv()
+		env["IP_WHITELIST"] = "203.0.113.0/24,198.51.100.7"
+		setEnv(t, env)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		require.Len(t, cfg.Whitelist, 2)
+		assert.Equal(t, netip.MustParsePrefix("203.0.113.0/24"), cfg.Whitelist[0])
+		assert.Equal(t, netip.MustParsePrefix("198.51.100.7/32"), cfg.Whitelist[1])
+	})
+
+	t.Run("invalid whitelist causes error", func(t *testing.T) {
+		env := validEnv()
+		env["IP_WHITELIST"] = "notanip"
+		setEnv(t, env)
+
+		_, err := Load()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "IP_WHITELIST")
+		assert.Contains(t, err.Error(), "notanip")
+	})
+
+	t.Run("unset whitelist is nil", func(t *testing.T) {
+		setEnv(t, validEnv())
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Nil(t, cfg.Whitelist)
+	})
+}
+
+func TestLoad_FileSecret(t *testing.T) {
+	t.Run("CROWDSEC_LAPI_KEY_FILE provides key when direct var unset", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "lapi_key")
+		require.NoError(t, os.WriteFile(keyFile, []byte("my-lapi-key-from-file"), 0o600))
+
+		env := validEnv()
+		delete(env, "CROWDSEC_LAPI_KEY")
+		setEnv(t, env)
+		os.Unsetenv("CROWDSEC_LAPI_KEY")
+		t.Setenv("CROWDSEC_LAPI_KEY_FILE", keyFile)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "my-lapi-key-from-file", cfg.LAPIKey)
+	})
+
+	t.Run("ABUSEIPDB_API_KEY_FILE provides key when direct var unset", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "abuseipdb_key")
+		require.NoError(t, os.WriteFile(keyFile, []byte("my-abuseipdb-key-from-file"), 0o600))
+
+		env := validEnv()
+		delete(env, "ABUSEIPDB_API_KEY")
+		setEnv(t, env)
+		os.Unsetenv("ABUSEIPDB_API_KEY")
+		t.Setenv("ABUSEIPDB_API_KEY_FILE", keyFile)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "my-abuseipdb-key-from-file", cfg.AbuseIPDBAPIKey)
+	})
+
+	t.Run("direct env var wins over _FILE", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "lapi_key")
+		require.NoError(t, os.WriteFile(keyFile, []byte("from-file"), 0o600))
+
+		env := validEnv()
+		env["CROWDSEC_LAPI_KEY"] = "direct-key-value"
+		setEnv(t, env)
+		t.Setenv("CROWDSEC_LAPI_KEY_FILE", keyFile)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "direct-key-value", cfg.LAPIKey)
+	})
+
+	t.Run("nonexistent _FILE path fails with required error", func(t *testing.T) {
+		env := validEnv()
+		delete(env, "CROWDSEC_LAPI_KEY")
+		setEnv(t, env)
+		os.Unsetenv("CROWDSEC_LAPI_KEY")
+		t.Setenv("CROWDSEC_LAPI_KEY_FILE", "/nonexistent/path/to/key")
+
+		_, err := Load()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "CROWDSEC_LAPI_KEY is required")
+	})
+
+	t.Run("file with surrounding whitespace is trimmed", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "lapi_key")
+		require.NoError(t, os.WriteFile(keyFile, []byte("  my-key-with-spaces\n"), 0o600))
+
+		env := validEnv()
+		delete(env, "CROWDSEC_LAPI_KEY")
+		setEnv(t, env)
+		os.Unsetenv("CROWDSEC_LAPI_KEY")
+		t.Setenv("CROWDSEC_LAPI_KEY_FILE", keyFile)
+
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "my-key-with-spaces", cfg.LAPIKey)
+	})
 }
 
 func TestEnvBool(t *testing.T) {

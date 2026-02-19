@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -327,6 +328,45 @@ func (u *unhealthySink) Name() string                                    { retur
 func (u *unhealthySink) Report(_ context.Context, _ *sink.Report) error { return nil }
 func (u *unhealthySink) Healthy(_ context.Context) error                 { return errors.New("sink unavailable") }
 func (u *unhealthySink) Close() error                                    { return nil }
+
+func TestBuildPreQueueFilters_Whitelist(t *testing.T) {
+	validDec := func(ip string) *decision.Decision {
+		return &decision.Decision{
+			Action:   "add",
+			Origin:   "crowdsec",
+			Scenario: "crowdsecurity/ssh-bf",
+			Scope:    "Ip",
+			Value:    ip,
+			Duration: "1h",
+		}
+	}
+
+	t.Run("whitelisted IP is skipped", func(t *testing.T) {
+		cfg := &config.Config{
+			Whitelist: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+		}
+		filters := buildPreQueueFilters(cfg)
+		reason := decision.Pipeline(filters, validDec("203.0.113.42"))
+		require.NotNil(t, reason)
+		assert.Equal(t, "whitelist", reason.Filter)
+	})
+
+	t.Run("non-whitelisted IP passes", func(t *testing.T) {
+		cfg := &config.Config{
+			Whitelist: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
+		}
+		filters := buildPreQueueFilters(cfg)
+		reason := decision.Pipeline(filters, validDec("8.8.8.8"))
+		assert.Nil(t, reason)
+	})
+
+	t.Run("empty whitelist does not filter any IP", func(t *testing.T) {
+		cfg := &config.Config{} // Whitelist is nil — filter not added
+		filters := buildPreQueueFilters(cfg)
+		reason := decision.Pipeline(filters, validDec("203.0.113.42"))
+		assert.Nil(t, reason)
+	})
+}
 
 func TestPtrStr(t *testing.T) {
 	s := "hello"
