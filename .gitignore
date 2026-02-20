@@ -53,7 +53,14 @@ docker-compose.override.yml
 /smoke-test-output/
 
 # ------------------------------------------------------------------------------
-# 5. IDE & AI TOOLS
+# 5. DEVELOPER-ONLY SCRIPTS
+# ------------------------------------------------------------------------------
+# Ignore all of scripts/ except validate-seccomp.sh (required by ci.yml)
+/scripts/
+!scripts/validate-seccomp.sh
+
+# ------------------------------------------------------------------------------
+# 6. IDE & AI TOOLS
 # ------------------------------------------------------------------------------
 # Editors
 .vscode/
@@ -61,14 +68,21 @@ docker-compose.override.yml
 *.swp
 *.swo
 
-# AI Assistants (Cursor, Claude, Aider)
+# AI assistants — Claude, Cursor, Aider, Copilot, Codex, Gemini, Windsurf, etc.
 .claude/
 .cursor/
 .aider*
+.continue/
+.copilot/
 CLAUDE.md
+AGENTS.md
+GEMINI.md
+WINDSURF.md
+.windsurfrules
+copilot-instructions.md
 
 # ------------------------------------------------------------------------------
-# 6. SYSTEM & TEMPORARY
+# 7. SYSTEM & TEMPORARY
 # ------------------------------------------------------------------------------
 .DS_Store
 Thumbs.db
