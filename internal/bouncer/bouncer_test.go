@@ -324,10 +324,10 @@ func TestHealthy_SinkFailure(t *testing.T) {
 // unhealthySink always returns an error from Healthy.
 type unhealthySink struct{}
 
-func (u *unhealthySink) Name() string                                    { return "unhealthy" }
+func (u *unhealthySink) Name() string                                   { return "unhealthy" }
 func (u *unhealthySink) Report(_ context.Context, _ *sink.Report) error { return nil }
-func (u *unhealthySink) Healthy(_ context.Context) error                 { return errors.New("sink unavailable") }
-func (u *unhealthySink) Close() error                                    { return nil }
+func (u *unhealthySink) Healthy(_ context.Context) error                { return errors.New("sink unavailable") }
+func (u *unhealthySink) Close() error                                   { return nil }
 
 func TestBuildPreQueueFilters_Whitelist(t *testing.T) {
 	validDec := func(ip string) *decision.Decision {

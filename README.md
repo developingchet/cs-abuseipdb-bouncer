@@ -4,6 +4,8 @@
 
 # CrowdSec AbuseIPDB Bouncer
 [![Build](https://github.com/developingchet/cs-abuseipdb-bouncer/actions/workflows/release.yml/badge.svg)](https://github.com/developingchet/cs-abuseipdb-bouncer/actions/workflows/release.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/developingchet/cs-abuseipdb-bouncer)](https://goreportcard.com/report/github.com/developingchet/cs-abuseipdb-bouncer)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/developingchet/cs-abuseipdb-bouncer)](https://github.com/developingchet/cs-abuseipdb-bouncer)
 [![Docker Pulls](https://img.shields.io/docker/pulls/developingchet/cs-abuseipdb-bouncer)](https://hub.docker.com/r/developingchet/cs-abuseipdb-bouncer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 

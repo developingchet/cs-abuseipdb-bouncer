@@ -21,10 +21,10 @@ import (
 // compliance at compile time.
 type stubSink struct{}
 
-func (s *stubSink) Name() string                                    { return "stub" }
+func (s *stubSink) Name() string                                   { return "stub" }
 func (s *stubSink) Report(_ context.Context, _ *sink.Report) error { return nil }
-func (s *stubSink) Healthy(_ context.Context) error                 { return nil }
-func (s *stubSink) Close() error                                    { return nil }
+func (s *stubSink) Healthy(_ context.Context) error                { return nil }
+func (s *stubSink) Close() error                                   { return nil }
 
 // Compile-time assertion: stubSink must satisfy sink.Sink.
 var _ sink.Sink = (*stubSink)(nil)

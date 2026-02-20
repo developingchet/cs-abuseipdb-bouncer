@@ -16,22 +16,14 @@ var redactPatterns = []struct {
 	{regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*`), []byte("bearer [REDACTED]")},
 }
 
-// RedactWriter wraps an io.Writer and replaces known secret patterns with
-// redaction markers before forwarding the data downstream. It is safe for
-// concurrent use only if the underlying writer is also safe.
 type RedactWriter struct{ w io.Writer }
 
-// NewRedactWriter returns a RedactWriter that redacts secrets before writing
-// to w.
 func NewRedactWriter(w io.Writer) *RedactWriter { return &RedactWriter{w: w} }
 
-// Write redacts secrets in p and writes the result to the underlying writer.
-// It always returns len(p), nil so that callers (e.g. zerolog) are not
-// confused by a shorter-than-expected write.
 func (r *RedactWriter) Write(p []byte) (int, error) {
 	out := p
 	for _, pat := range redactPatterns {
-		out = pat.re.ReplaceAll(out, pat.replacement)
+		out = pat.re.ReplaceAllLiteral(out, pat.replacement)
 	}
 	_, err := r.w.Write(out)
 	return len(p), err

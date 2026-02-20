@@ -31,7 +31,7 @@ type Config struct {
 	LogFormat        string        `koanf:"log_format"`
 	PollInterval     time.Duration `koanf:"poll_interval"`
 	CooldownDuration time.Duration `koanf:"cooldown_duration"`
-	DataDir          string        `koanf:"data_dir"`          // falls back to STATE_DIR for legacy compatibility
+	DataDir          string        `koanf:"data_dir"` // falls back to STATE_DIR for legacy compatibility
 	MetricsEnabled   bool          `koanf:"metrics_enabled"`
 	MetricsAddr      string        `koanf:"metrics_addr"` // "" = disabled
 	TLSSkipVerify    bool          `koanf:"tls_skip_verify"`

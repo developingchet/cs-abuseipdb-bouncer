@@ -62,13 +62,13 @@ var secretPatterns = []struct {
 // allowlistPatterns lists line patterns that are safe false-positives.
 // A line matching ANY allowlist entry is skipped even if it matches a secret pattern.
 var allowlistPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`^\s*#`),                          // comment lines
-	regexp.MustCompile(`_test\.go`),                      // test file references (not inline keys)
+	regexp.MustCompile(`^\s*#`),     // comment lines
+	regexp.MustCompile(`_test\.go`), // test file references (not inline keys)
 	regexp.MustCompile(`(?i)test-key|test-api-key|test-abuseipdb-key|test-api-key-1234|"test`), // test fixtures
-	regexp.MustCompile(`(?i)your[-_]key|your[-_]token|your[-_]password`), // placeholder prose
-	regexp.MustCompile(`(?i)\$\{[^}]+\}|\$[A-Z_]+`),     // shell variable expansion like ${DOCKER_PASSWORD}
-	regexp.MustCompile(`\{\{[^}]+\}\}`),                  // Go / Helm template {{ .Value }}
-	regexp.MustCompile(`secrets\.[A-Z_]+`),               // GitHub Actions secret references
+	regexp.MustCompile(`(?i)your[-_]key|your[-_]token|your[-_]password`),                       // placeholder prose
+	regexp.MustCompile(`(?i)\$\{[^}]+\}|\$[A-Z_]+`),                                            // shell variable expansion like ${DOCKER_PASSWORD}
+	regexp.MustCompile(`\{\{[^}]+\}\}`),                                                        // Go / Helm template {{ .Value }}
+	regexp.MustCompile(`secrets\.[A-Z_]+`),                                                     // GitHub Actions secret references
 	regexp.MustCompile(`(?i)example|placeholder|redacted|changeme`),
 	// Repeated single-character placeholders: xxxxxxxx, 00000000, etc.
 	regexp.MustCompile(`[xX]{8,}|[0]{8,}`),

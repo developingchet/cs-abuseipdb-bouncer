@@ -9,12 +9,12 @@ import (
 // It is exported so that bouncer_test.go can import it without creating a
 // file on disk.
 type MemStore struct {
-	mu           sync.Mutex
-	limit        int
-	cooldownDur  time.Duration
-	quotaCount   int
-	quotaDate    string
-	cooldowns    map[string]int64 // sanitized IP → Unix expiry
+	mu          sync.Mutex
+	limit       int
+	cooldownDur time.Duration
+	quotaCount  int
+	quotaDate   string
+	cooldowns   map[string]int64 // sanitized IP → Unix expiry
 }
 
 // NewMemStore creates a fresh in-memory store with the given quota limit and

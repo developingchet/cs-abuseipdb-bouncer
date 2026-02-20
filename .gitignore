@@ -1,148 +1,78 @@
 # ==============================================================================
-# cs-abuseipdb-bouncer — production .gitignore
+# cs-abuseipdb-bouncer — Git Exclusion Policy
 # ==============================================================================
-# Rules are grouped by category. Within each group, specific patterns come
-# before broad globs so the intent of each rule is explicit.
 
 # ------------------------------------------------------------------------------
-# SECRETS & LOCAL CONFIGURATION
-# Never commit files that may hold real API keys, passwords, or tokens.
+# 1. CORE GO ARTIFACTS
 # ------------------------------------------------------------------------------
-.env
-.env.*
-!.env.example          # the example template is always safe to commit
-
-config.yaml
-config.yml
-*.local                # e.g. docker-compose.local, .env.local
-*.local.md             # local notes (e.g. RELEASE.local.md)
-*.local.yml            # e.g. docker-compose.local.yml
-
-# ------------------------------------------------------------------------------
-# BBOLT STATE — runtime database and lock files
-# state.db is created at DATA_DIR (/data by default). Developers who set
-# DATA_DIR=./data or run the bouncer locally must not accidentally commit it.
-# ------------------------------------------------------------------------------
-*.db
-*.db.lock
-data/
-/data/
-
-# ------------------------------------------------------------------------------
-# GO BUILD ARTIFACTS
-# Compiled binaries, test binaries, profiling output, and coverage reports.
-# ------------------------------------------------------------------------------
-
-# Named release binaries (produced by Makefile / release.yml)
+# Binaries and toolchains
 /bouncer
 /cs-abuseipdb-bouncer
-/dist/
 /bin/
+/dist/
+/vendor/
+/obj/
 
-# Cross-compiled release artifacts in project root or dist/
-cs-abuseipdb-bouncer-linux-amd64
-cs-abuseipdb-bouncer-linux-arm64
-cs-abuseipdb-bouncer-windows-amd64.exe
+# Specific cross-compilation targets
+*-linux-amd64
+*-linux-arm64
+*-windows-amd64.exe
 *.exe
-
-# Go test binaries (go test -c outputs these)
 *.test
 
-# Coverage and profiling
-coverage.out
-coverage.html
-cpu.pprof
-mem.pprof
+# ------------------------------------------------------------------------------
+# 2. DATA & STATE (BBolt / Runtime)
+# ------------------------------------------------------------------------------
+# Prevent committing the database, but keep the data directory structure if desired
+*.db
+*.db.lock
+data/*
+!data/.gitkeep
+/state/
+
+# ------------------------------------------------------------------------------
+# 3. SECRETS & DYNAMIC CONFIG
+# ------------------------------------------------------------------------------
+.env*
+!.env.example
+config.yaml
+config.yml
+*.local
+*.local.yml
+*.local.md
+docker-compose.override.yml
+
+# ------------------------------------------------------------------------------
+# 4. OBSERVABILITY & TESTING
+# ------------------------------------------------------------------------------
+# Coverage and Profiling
+*.out
+*.html
 *.prof
 *.pprof
-
-# Vendor directory (project uses Go modules)
-vendor/
-
-# ------------------------------------------------------------------------------
-# DOCKER LOCAL ARTIFACTS
-# ------------------------------------------------------------------------------
-# Local docker-compose overrides with real secrets
-docker-compose.override.yml
-docker-compose.local.yml
-
-# ------------------------------------------------------------------------------
-# IDE & EDITOR
-# ------------------------------------------------------------------------------
-
-# VS Code — workspace settings are user-specific except .editorconfig
-.vscode/
-
-# JetBrains (GoLand, IntelliJ)
-.idea/
-*.iml
-*.iws
-*.ipr
-
-# Sublime Text
-*.sublime-project
-*.sublime-workspace
-
-# Vim / Neovim swap files
-*.swp
-*.swo
-*~
-.netrwhist
-
-# Emacs
-\#*\#
-.\#*
-
-# ------------------------------------------------------------------------------
-# AI CODING TOOL ARTIFACTS
-# Local permission grants and session state are machine-specific.
-# ------------------------------------------------------------------------------
-.claude/
-.cursor/
-.aider*
-.copilot/
-CLAUDE.md
-
-# ------------------------------------------------------------------------------
-# OPERATING SYSTEM
-# ------------------------------------------------------------------------------
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-.Spotlight-V100
-.Trashes
-
-# Windows
-Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
-ehthumbs_vista.db
-desktop.ini
-$RECYCLE.BIN/
-*.lnk
-
-# Linux
-.nfs*
-
-# ------------------------------------------------------------------------------
-# TEMPORARY & SCRATCH FILES
-# ------------------------------------------------------------------------------
-*.tmp
-*.temp
-*.bak
-*.orig
-*.rej
-/tmp/
-
-# Smoke test artifacts written to /tmp inside the project
 /smoke-test-output/
 
 # ------------------------------------------------------------------------------
-# OPTIONAL: leftovers from the v1 shell-script era
-# Belt-and-suspenders in case anyone re-creates these directories locally.
+# 5. IDE & AI TOOLS
 # ------------------------------------------------------------------------------
-/state/
-internal/state/
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI Assistants (Cursor, Claude, Aider)
+.claude/
+.cursor/
+.aider*
+CLAUDE.md
+
+# ------------------------------------------------------------------------------
+# 6. SYSTEM & TEMPORARY
+# ------------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+/tmp/
+nul
