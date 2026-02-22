@@ -50,6 +50,10 @@ docker-compose.override.yml
 *.html
 *.prof
 *.pprof
+coverage
+cov_*
+$cov
+$p
 /smoke-test-output/
 
 # ------------------------------------------------------------------------------

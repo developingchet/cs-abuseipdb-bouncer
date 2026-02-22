@@ -28,14 +28,14 @@ func TestReport_ContextDeadline_IncrementsTimeoutMetric(t *testing.T) {
 	before := testutil.ToFloat64(metrics.APIErrors.WithLabelValues("timeout"))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(500 * time.Millisecond) // outlast the 100 ms context below
+		time.Sleep(500 * time.Millisecond) // outlast the 200 ms context below
 	}))
 	defer func() {
 		srv.CloseClientConnections()
 		srv.Close()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	c := buildClient(srv.URL, srv.URL)
@@ -52,8 +52,10 @@ func TestReport_ContextDeadline_IncrementsTimeoutMetric(t *testing.T) {
 // seconds from the JSON body.
 func TestReport_RateLimit429_IncrementsMetricAndExtractsRetryAfter(t *testing.T) {
 	before := testutil.ToFloat64(metrics.APIErrors.WithLabelValues("rate_limit"))
+	calls := 0
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
 		w.WriteHeader(http.StatusTooManyRequests)
 		fmt.Fprint(w, `{"errors":[{"detail":"Try again in 1 seconds."}]}`)
 	}))
@@ -72,4 +74,5 @@ func TestReport_RateLimit429_IncrementsMetricAndExtractsRetryAfter(t *testing.T)
 	after := testutil.ToFloat64(metrics.APIErrors.WithLabelValues("rate_limit"))
 	assert.Equal(t, float64(1), after-before,
 		"api_errors{type=rate_limit} must be incremented by exactly 1")
+	assert.Equal(t, 1, calls, "429 path must not retry")
 }

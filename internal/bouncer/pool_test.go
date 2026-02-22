@@ -2,6 +2,7 @@ package bouncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -76,7 +77,7 @@ func TestWorkerPool_10kDecisions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(ctx, workers, total, store, []sink.Sink{cs})
+	pool := newWorkerPool(ctx, workers, total, store, []sink.Sink{cs}, nil)
 
 	for i := 0; i < total; i++ {
 		// Use different IPs so cooldown doesn't block all of them.
@@ -99,7 +100,7 @@ func TestWorkerPool_QuotaNotExceeded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(ctx, 4, total, store, []sink.Sink{cs})
+	pool := newWorkerPool(ctx, 4, total, store, []sink.Sink{cs}, nil)
 
 	for i := 0; i < total; i++ {
 		pool.submit(workerJob{d: makeDecision(uniqueIP(i))})
@@ -123,7 +124,7 @@ func TestWorkerPool_CooldownAtomicity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(ctx, 8, total, store, []sink.Sink{cs})
+	pool := newWorkerPool(ctx, 8, total, store, []sink.Sink{cs}, nil)
 
 	const ip = "203.0.113.42"
 	for i := 0; i < total; i++ {
@@ -153,7 +154,7 @@ func TestWorkerPool_Backpressure(t *testing.T) {
 
 	// A slow sink ensures workers stay busy while we flood the buffer.
 	ss := &slowSink{delay: 50 * time.Millisecond, counted: countingSink{}}
-	pool := newWorkerPool(ctx, 1, buf, store, []sink.Sink{ss})
+	pool := newWorkerPool(ctx, 1, buf, store, []sink.Sink{ss}, nil)
 
 	var dropped atomic.Int64
 	for i := 0; i < flood; i++ {
@@ -179,7 +180,7 @@ func TestWorkerPool_GracefulShutdown(t *testing.T) {
 	ss := &slowSink{delay: 200 * time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pool := newWorkerPool(ctx, 4, 64, store, []sink.Sink{ss})
+	pool := newWorkerPool(ctx, 4, 64, store, []sink.Sink{ss}, nil)
 
 	for i := 0; i < 20; i++ {
 		pool.submit(workerJob{d: makeDecision(uniqueIP(i))})
@@ -198,6 +199,50 @@ func TestWorkerPool_GracefulShutdown(t *testing.T) {
 		// Clean shutdown.
 	case <-time.After(5 * time.Second):
 		t.Error("pool.stop() did not return within 5s — possible deadlock")
+	}
+}
+
+type cooldownErrStore struct{ *storage.MemStore }
+
+func (s *cooldownErrStore) CooldownConsume(string) (bool, error) {
+	return false, errors.New("cooldown consume failed")
+}
+
+type quotaErrStore struct{ *storage.MemStore }
+
+func (s *quotaErrStore) QuotaConsume() (bool, error) {
+	return false, errors.New("quota consume failed")
+}
+
+func TestWorkerPool_ProcessJob_CooldownConsumeError(t *testing.T) {
+	base := storage.NewMemStore(100, time.Minute)
+	store := &cooldownErrStore{MemStore: base}
+	cs := &countingSink{}
+
+	pool := &workerPool{
+		store: store,
+		sinks: []sink.Sink{cs},
+	}
+	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.200")})
+
+	if got := cs.count(); got != 0 {
+		t.Fatalf("expected no reports on cooldown consume error, got %d", got)
+	}
+}
+
+func TestWorkerPool_ProcessJob_QuotaConsumeError(t *testing.T) {
+	base := storage.NewMemStore(100, time.Minute)
+	store := &quotaErrStore{MemStore: base}
+	cs := &countingSink{}
+
+	pool := &workerPool{
+		store: store,
+		sinks: []sink.Sink{cs},
+	}
+	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.201")})
+
+	if got := cs.count(); got != 0 {
+		t.Fatalf("expected no reports on quota consume error, got %d", got)
 	}
 }
 

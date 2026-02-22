@@ -17,8 +17,11 @@ import (
 // Config holds all runtime configuration.
 type Config struct {
 	// CrowdSec LAPI connection
-	LAPIURL string `koanf:"crowdsec_lapi_url"`
-	LAPIKey string `koanf:"crowdsec_lapi_key"`
+	LAPIURL         string `koanf:"crowdsec_lapi_url"`
+	LAPIKey         string `koanf:"crowdsec_lapi_key"`
+	LAPITLSCertPath string `koanf:"crowdsec_lapi_tls_cert_path"`
+	LAPITLSKeyPath  string `koanf:"crowdsec_lapi_tls_key_path"`
+	LAPITLSCAPath   string `koanf:"crowdsec_lapi_tls_ca_cert_path"`
 
 	// AbuseIPDB
 	AbuseIPDBAPIKey string        `koanf:"abuseipdb_api_key"`
@@ -30,6 +33,7 @@ type Config struct {
 	LogLevel         string        `koanf:"log_level"`
 	LogFormat        string        `koanf:"log_format"`
 	PollInterval     time.Duration `koanf:"poll_interval"`
+	LAPITimeout      time.Duration `koanf:"lapi_timeout"`
 	CooldownDuration time.Duration `koanf:"cooldown_duration"`
 	DataDir          string        `koanf:"data_dir"` // falls back to STATE_DIR for legacy compatibility
 	MetricsEnabled   bool          `koanf:"metrics_enabled"`
@@ -37,35 +41,61 @@ type Config struct {
 	TLSSkipVerify    bool          `koanf:"tls_skip_verify"`
 
 	// Concurrency
-	WorkerCount     int           `koanf:"worker_count"`
-	WorkerBuffer    int           `koanf:"worker_buffer"`
-	JanitorInterval time.Duration `koanf:"janitor_interval"`
+	WorkerCount          int           `koanf:"worker_count"`
+	WorkerBuffer         int           `koanf:"worker_buffer"`
+	JanitorInterval      time.Duration `koanf:"janitor_interval"`
+	UsageMetricsEnabled  bool          `koanf:"usage_metrics_enabled"`
+	UsageMetricsInterval time.Duration `koanf:"usage_metrics_interval"`
 
 	// Whitelist
 	// Raw comma-separated CIDR/IP string from IP_WHITELIST env var.
 	WhitelistCIDR string `koanf:"ip_whitelist"`
 	// Parsed at startup from WhitelistCIDR. Not loaded by koanf.
 	Whitelist []netip.Prefix
+
+	// BuildVersion is injected by main at runtime and is not loaded from env/file.
+	BuildVersion string
 }
 
 // defaults is the lowest-priority layer.
 var defaults = map[string]any{
-	"crowdsec_lapi_url":     "",
-	"crowdsec_lapi_key":     "",
-	"abuseipdb_api_key":     "",
-	"abuseipdb_daily_limit": 1000,
-	"abuseipdb_precheck":    false,
-	"log_level":             "info",
-	"log_format":            "json",
-	"poll_interval":         30 * time.Second,
-	"cooldown_duration":     15 * time.Minute,
-	"data_dir":              "/data",
-	"metrics_enabled":       true,
-	"metrics_addr":          ":9090",
-	"tls_skip_verify":       false,
-	"worker_count":          4,
-	"worker_buffer":         256,
-	"janitor_interval":      5 * time.Minute,
+	"crowdsec_lapi_url":      "",
+	"crowdsec_lapi_key":      "",
+	"abuseipdb_api_key":      "",
+	"abuseipdb_daily_limit":  1000,
+	"abuseipdb_precheck":     false,
+	"log_level":              "info",
+	"log_format":             "json",
+	"poll_interval":          10 * time.Second,
+	"lapi_timeout":           10 * time.Second,
+	"cooldown_duration":      15 * time.Minute,
+	"data_dir":               "/data",
+	"metrics_enabled":        true,
+	"metrics_addr":           ":9090",
+	"tls_skip_verify":        false,
+	"worker_count":           4,
+	"worker_buffer":          256,
+	"janitor_interval":       5 * time.Minute,
+	"usage_metrics_enabled":  true,
+	"usage_metrics_interval": 30 * time.Minute,
+}
+
+var (
+	loadDefaultsLayer = func(k *koanf.Koanf) error {
+		return k.Load(confmap.Provider(defaults, "."), nil)
+	}
+	loadEnvLayer = func(k *koanf.Koanf) error {
+		return k.Load(env.Provider("", ".", envKeyMapper), nil)
+	}
+	statFile = os.Stat
+	openFile = os.Open
+)
+
+func envKeyMapper(s string) string {
+	if s == "ABUSEIPDB_MIN_DURATION" {
+		return "" // skip; handled manually below
+	}
+	return strings.ToLower(s)
 }
 
 // Load reads configuration from (lowest → highest priority):
@@ -76,7 +106,7 @@ func Load() (*Config, error) {
 	k := koanf.New(".")
 
 	// Layer 1: defaults.
-	if err := k.Load(confmap.Provider(defaults, "."), nil); err != nil {
+	if err := loadDefaultsLayer(k); err != nil {
 		return nil, fmt.Errorf("config: load defaults: %w", err)
 	}
 
@@ -91,12 +121,7 @@ func Load() (*Config, error) {
 	// Transform: "CROWDSEC_LAPI_URL" → "crowdsec_lapi_url".
 	// ABUSEIPDB_MIN_DURATION is intentionally skipped here and handled below
 	// to support both Go duration strings ("5m") and plain integer seconds ("300").
-	if err := k.Load(env.Provider("", ".", func(s string) string {
-		if s == "ABUSEIPDB_MIN_DURATION" {
-			return "" // skip; handled manually below
-		}
-		return strings.ToLower(s)
-	}), nil); err != nil {
+	if err := loadEnvLayer(k); err != nil {
 		return nil, fmt.Errorf("config: load env: %w", err)
 	}
 
@@ -108,6 +133,9 @@ func Load() (*Config, error) {
 	// Normalise string fields.
 	cfg.LogLevel = strings.TrimSpace(strings.ToLower(cfg.LogLevel))
 	cfg.LogFormat = strings.TrimSpace(strings.ToLower(cfg.LogFormat))
+	cfg.LAPITLSCertPath = strings.TrimSpace(cfg.LAPITLSCertPath)
+	cfg.LAPITLSKeyPath = strings.TrimSpace(cfg.LAPITLSKeyPath)
+	cfg.LAPITLSCAPath = strings.TrimSpace(cfg.LAPITLSCAPath)
 
 	// ABUSEIPDB_MIN_DURATION: accept both Go duration strings ("5m") and
 	// plain integer seconds ("300") for backwards-compatibility.
@@ -153,8 +181,20 @@ func (c *Config) validate() error {
 	if c.LAPIURL == "" {
 		errs = append(errs, "CROWDSEC_LAPI_URL is required (e.g., http://crowdsec:8080)")
 	}
-	if c.LAPIKey == "" {
-		errs = append(errs, "CROWDSEC_LAPI_KEY is required (run: docker exec crowdsec cscli bouncers add abuseipdb-bouncer)")
+	hasAPIKey := strings.TrimSpace(c.LAPIKey) != ""
+	hasTLSCert := c.LAPITLSCertPath != ""
+	hasTLSKey := c.LAPITLSKeyPath != ""
+
+	if hasAPIKey && (hasTLSCert || hasTLSKey) {
+		errs = append(errs, "CROWDSEC_LAPI_KEY cannot be combined with mTLS cert/key; use exactly one auth mode")
+	}
+	if !hasAPIKey {
+		if hasTLSCert != hasTLSKey {
+			errs = append(errs, "CROWDSEC_LAPI_TLS_CERT_PATH and CROWDSEC_LAPI_TLS_KEY_PATH must both be set for mTLS auth")
+		}
+		if !hasTLSCert && !hasTLSKey {
+			errs = append(errs, "either CROWDSEC_LAPI_KEY (or CROWDSEC_LAPI_KEY_FILE) or mTLS cert/key paths must be configured")
+		}
 	}
 	if c.AbuseIPDBAPIKey == "" {
 		errs = append(errs, "ABUSEIPDB_API_KEY is required (get your key at: https://www.abuseipdb.com/account/api)")
@@ -164,6 +204,9 @@ func (c *Config) validate() error {
 	}
 	if c.PollInterval < 10*time.Second {
 		errs = append(errs, "POLL_INTERVAL must be at least 10s")
+	}
+	if c.LAPITimeout < 200*time.Millisecond {
+		errs = append(errs, "LAPI_TIMEOUT must be at least 200ms")
 	}
 	if c.CooldownDuration < 1*time.Minute {
 		errs = append(errs, "COOLDOWN_DURATION must be at least 1m")
@@ -185,6 +228,22 @@ func (c *Config) validate() error {
 	}
 	if c.JanitorInterval < 30*time.Second {
 		errs = append(errs, "JANITOR_INTERVAL must be at least 30s")
+	}
+	if c.UsageMetricsInterval < 10*time.Minute {
+		errs = append(errs, "USAGE_METRICS_INTERVAL must be at least 10m")
+	}
+	if !hasAPIKey && hasTLSCert && hasTLSKey {
+		if err := validateReadableFile(c.LAPITLSCertPath, "CROWDSEC_LAPI_TLS_CERT_PATH"); err != nil {
+			errs = append(errs, err.Error())
+		}
+		if err := validateReadableFile(c.LAPITLSKeyPath, "CROWDSEC_LAPI_TLS_KEY_PATH"); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if c.LAPITLSCAPath != "" {
+		if err := validateReadableFile(c.LAPITLSCAPath, "CROWDSEC_LAPI_TLS_CA_CERT_PATH"); err != nil {
+			errs = append(errs, err.Error())
+		}
 	}
 
 	if c.WhitelistCIDR != "" {
@@ -271,4 +330,21 @@ func envBool(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func validateReadableFile(path string, envName string) error {
+	info, err := statFile(path)
+	if err != nil {
+		return fmt.Errorf("%s file %q is not accessible: %w", envName, path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s path %q must be a file, not a directory", envName, path)
+	}
+
+	f, err := openFile(path)
+	if err != nil {
+		return fmt.Errorf("%s file %q is not readable: %w", envName, path, err)
+	}
+	_ = f.Close()
+	return nil
 }

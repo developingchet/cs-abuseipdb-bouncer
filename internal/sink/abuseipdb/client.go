@@ -32,8 +32,8 @@ const (
 	defaultCheckURL  = "https://api.abuseipdb.com/api/v2/check"
 	reportTimeout    = 15 * time.Second
 	checkTimeout     = 10 * time.Second
-	maxRetries       = 3
-	initialBackoff   = 5 * time.Second
+	defaultMaxRetries     = 3
+	defaultInitialBackoff = 5 * time.Second
 )
 
 // ClientConfig holds configuration for the AbuseIPDB client.
@@ -42,6 +42,9 @@ type ClientConfig struct {
 	Precheck  bool
 	ReportURL string // Override for testing
 	CheckURL  string // Override for testing
+	MaxRetries     int
+	InitialBackoff time.Duration
+	SleepFn        func(time.Duration)
 }
 
 // Client implements the sink.Sink interface for AbuseIPDB.
@@ -51,6 +54,10 @@ type Client struct {
 	reportURL  string
 	checkURL   string
 	httpClient *http.Client
+	maxRetries     int
+	initialBackoff time.Duration
+	sleepFn        func(time.Duration)
+	customSleepFn  bool
 }
 
 // Compile-time interface check.
@@ -65,6 +72,18 @@ func NewClient(cfg ClientConfig) *Client {
 	checkURL := cfg.CheckURL
 	if checkURL == "" {
 		checkURL = defaultCheckURL
+	}
+	maxRetries := cfg.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = defaultMaxRetries
+	}
+	initialBackoff := cfg.InitialBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = defaultInitialBackoff
+	}
+	sleepFn := cfg.SleepFn
+	if sleepFn == nil {
+		sleepFn = time.Sleep
 	}
 
 	transport := &http.Transport{
@@ -81,6 +100,10 @@ func NewClient(cfg ClientConfig) *Client {
 		httpClient: &http.Client{
 			Transport: transport,
 		},
+		maxRetries:     maxRetries,
+		initialBackoff: initialBackoff,
+		sleepFn:        sleepFn,
+		customSleepFn:  cfg.SleepFn != nil,
 	}
 }
 
@@ -120,9 +143,9 @@ func (c *Client) Report(ctx context.Context, r *sink.Report) error {
 }
 
 func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment string) error {
-	backoff := initialBackoff
+	backoff := c.initialBackoff
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	for attempt := 1; attempt <= c.maxRetries; attempt++ {
 		code, body, err := c.doReport(ctx, ip, categories, comment)
 		if err != nil {
 			// Distinguish context deadline exceeded from other network errors.
@@ -131,22 +154,20 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 				return ctx.Err()
 			}
 			metrics.APIErrors.WithLabelValues("network").Inc()
-			if attempt < maxRetries {
+			if attempt < c.maxRetries {
 				log.Warn().
 					Int("attempt", attempt).
-					Int("max", maxRetries).
+					Int("max", c.maxRetries).
 					Dur("wait", backoff).
 					Str("ip", ip).
 					Msg("retry")
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return ctx.Err()
+				if err := c.sleepWithContext(ctx, backoff); err != nil {
+					return err
 				}
 				backoff *= 2
 				continue
 			}
-			return fmt.Errorf("all %d attempts failed for ip=%s: %w", maxRetries, ip, err)
+			return fmt.Errorf("all %d attempts failed for ip=%s: %w", c.maxRetries, ip, err)
 		}
 
 		switch code {
@@ -164,10 +185,8 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 			log.Warn().
 				Int("sleep", waitSec).
 				Msg("rate-limited -- check daily quota at abuseipdb.com/account")
-			select {
-			case <-time.After(time.Duration(waitSec) * time.Second):
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := c.sleepWithContext(ctx, time.Duration(waitSec)*time.Second); err != nil {
+				return err
 			}
 			return fmt.Errorf("rate limited for ip=%s", ip)
 
@@ -178,17 +197,15 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 
 		default:
 			log.Warn().Int("http", code).Str("ip", ip).Msg("unexpected response")
-			if attempt < maxRetries {
+			if attempt < c.maxRetries {
 				log.Warn().
 					Int("attempt", attempt).
-					Int("max", maxRetries).
+					Int("max", c.maxRetries).
 					Dur("wait", backoff).
 					Str("ip", ip).
 					Msg("retry")
-				select {
-				case <-time.After(backoff):
-				case <-ctx.Done():
-					return ctx.Err()
+				if err := c.sleepWithContext(ctx, backoff); err != nil {
+					return err
 				}
 				backoff *= 2
 				continue
@@ -197,7 +214,7 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 		}
 	}
 
-	return fmt.Errorf("all %d attempts exhausted for ip=%s", maxRetries, ip)
+	return fmt.Errorf("all %d attempts exhausted for ip=%s", c.maxRetries, ip)
 }
 
 func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (int, []byte, error) {
@@ -298,6 +315,35 @@ func (c *Client) Healthy(ctx context.Context) error {
 }
 
 func (c *Client) Close() error { return nil }
+
+func (c *Client) sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	if !c.customSleepFn {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.sleepFn(d)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // --- helpers ---
 

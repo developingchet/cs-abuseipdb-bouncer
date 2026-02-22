@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
 )
+
+func installBoltSeams(t *testing.T) {
+	t.Helper()
+	origOpen := boltOpenFn
+	origMarshal := marshalQuotaRecord
+	origCreateBucket := createBucketIfNotExistsFn
+	origDeleteKey := deleteBucketKeyFn
+	t.Cleanup(func() {
+		boltOpenFn = origOpen
+		marshalQuotaRecord = origMarshal
+		createBucketIfNotExistsFn = origCreateBucket
+		deleteBucketKeyFn = origDeleteKey
+	})
+}
 
 func newTestStore(t *testing.T, limit int, cooldown time.Duration) *BoltStore {
 	t.Helper()
@@ -238,4 +253,117 @@ func TestSanitizeIP(t *testing.T) {
 	for _, tt := range tests {
 		assert.Equal(t, tt.expected, sanitizeIP(tt.input), "input=%s", tt.input)
 	}
+}
+
+func TestBoltStore_Open_BucketInitError(t *testing.T) {
+	installBoltSeams(t)
+	createBucketIfNotExistsFn = func(tx *bolt.Tx, name []byte) (*bolt.Bucket, error) {
+		return nil, errors.New("bucket init failed")
+	}
+
+	_, err := Open(filepath.Join(t.TempDir(), "state.db"), 1000, time.Minute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storage: init buckets")
+}
+
+func TestBoltStore_Quota_RemainingClampedWhenCorruptCountAboveLimit(t *testing.T) {
+	s := newTestStore(t, 1, time.Minute)
+	rec, err := json.Marshal(quotaRecord{Count: 5, Date: utcDateString()})
+	require.NoError(t, err)
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketQuota).Put(keyToday, rec)
+	}))
+
+	assert.Equal(t, 0, s.QuotaRemaining())
+}
+
+func TestBoltStore_QuotaCount_StaleRecordResetsOnRead(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	stale, err := json.Marshal(quotaRecord{Count: 123, Date: "2000-01-01"})
+	require.NoError(t, err)
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketQuota).Put(keyToday, stale)
+	}))
+
+	assert.Equal(t, 0, s.QuotaCount())
+}
+
+func TestDecodeQuota_InvalidJSONReturnsDefault(t *testing.T) {
+	rec := decodeQuota([]byte("not-json"))
+	assert.Equal(t, 0, rec.Count)
+	assert.Equal(t, utcDateString(), rec.Date)
+}
+
+func TestBoltStore_Cooldown_Prune_PrunesShortValues(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	key := []byte(sanitizeIP("10.0.0.7"))
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketCooldown).Put(key, []byte{1, 2, 3, 4})
+	}))
+
+	require.NoError(t, s.CooldownPrune())
+	assert.True(t, s.CooldownAllow("10.0.0.7"))
+}
+
+func TestBoltStore_Cooldown_Prune_DeleteError(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, -1*time.Second)
+	require.NoError(t, s.CooldownRecord("10.0.0.8"))
+
+	deleteBucketKeyFn = func(*bolt.Bucket, []byte) error {
+		return errors.New("delete failed")
+	}
+	err := s.CooldownPrune()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete failed")
+}
+
+func TestBoltStore_QuotaConsume_LimitReached(t *testing.T) {
+	s := newTestStore(t, 1, time.Minute)
+	allowed, err := s.QuotaConsume()
+	require.NoError(t, err)
+	assert.True(t, allowed)
+
+	allowed, err = s.QuotaConsume()
+	require.NoError(t, err)
+	assert.False(t, allowed)
+}
+
+func TestBoltStore_QuotaConsume_StaleRecordBranch(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	stale, err := json.Marshal(quotaRecord{Count: 99, Date: "2000-01-01"})
+	require.NoError(t, err)
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketQuota).Put(keyToday, stale)
+	}))
+
+	allowed, err := s.QuotaConsume()
+	require.NoError(t, err)
+	assert.True(t, allowed)
+	assert.Equal(t, 1, s.QuotaCount())
+}
+
+func TestBoltStore_QuotaRecord_MarshalError(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+	marshalQuotaRecord = func(any) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+
+	err := s.QuotaRecord()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal failed")
+}
+
+func TestBoltStore_QuotaConsume_MarshalError(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+	marshalQuotaRecord = func(any) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+
+	allowed, err := s.QuotaConsume()
+	assert.True(t, allowed, "allowed is set before marshal and remains true on marshal failure")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal failed")
 }

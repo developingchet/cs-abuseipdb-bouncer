@@ -2,6 +2,7 @@ package bouncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -103,5 +104,38 @@ func TestJanitor_DBSizeMetric(t *testing.T) {
 	got := testutil.ToFloat64(metrics.BboltDBSizeBytes)
 	if got <= 0 {
 		t.Errorf("expected BboltDBSizeBytes > 0 after janitor tick, got %v", got)
+	}
+}
+
+type janitorErrorStore struct{}
+
+func (s *janitorErrorStore) QuotaAllow() bool                     { return true }
+func (s *janitorErrorStore) QuotaCount() int                      { return 0 }
+func (s *janitorErrorStore) QuotaLimit() int                      { return 1 }
+func (s *janitorErrorStore) QuotaRemaining() int                  { return 1 }
+func (s *janitorErrorStore) QuotaRecord() error                   { return nil }
+func (s *janitorErrorStore) QuotaConsume() (bool, error)          { return true, nil }
+func (s *janitorErrorStore) CooldownAllow(string) bool            { return true }
+func (s *janitorErrorStore) CooldownRecord(string) error          { return nil }
+func (s *janitorErrorStore) CooldownPrune() error                 { return errors.New("prune failed") }
+func (s *janitorErrorStore) CooldownConsume(string) (bool, error) { return true, nil }
+func (s *janitorErrorStore) DBPath() string                       { return "" }
+func (s *janitorErrorStore) Close() error                         { return nil }
+
+func TestJanitor_PruneErrorBranch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runJanitor(ctx, &janitorErrorStore{}, 10*time.Millisecond)
+		close(done)
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("janitor did not stop")
 	}
 }

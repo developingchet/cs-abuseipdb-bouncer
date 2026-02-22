@@ -4,8 +4,10 @@ package bouncer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -17,6 +19,7 @@ import (
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/metrics"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/sink"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/storage"
+	"github.com/developingchet/cs-abuseipdb-bouncer/internal/telemetry"
 )
 
 // Bouncer connects the CrowdSec LAPI to one or more sinks.
@@ -29,7 +32,10 @@ type Bouncer struct {
 	stream     *csbouncer.StreamBouncer
 	httpSrv    *http.Server // nil when MetricsAddr == ""
 	pool       *workerPool
+	telemetry  *telemetry.Counter
 }
+
+var closeShutdownTimeout = 5 * time.Second
 
 // New creates a Bouncer and initialises all dependencies.
 func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
@@ -46,13 +52,19 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 		preFilters: buildPreQueueFilters(cfg),
 		store:      store,
 	}
+	if cfg.UsageMetricsEnabled {
+		b.telemetry = telemetry.NewCounter()
+	}
 
 	tlsSkipVerify := cfg.TLSSkipVerify
 	b.stream = &csbouncer.StreamBouncer{
 		APIKey:             cfg.LAPIKey,
 		APIUrl:             cfg.LAPIURL,
+		CertPath:           cfg.LAPITLSCertPath,
+		KeyPath:            cfg.LAPITLSKeyPath,
+		CAPath:             cfg.LAPITLSCAPath,
 		TickerInterval:     cfg.PollInterval.String(),
-		UserAgent:          "cs-abuseipdb-bouncer/2.0",
+		UserAgent:          lapiUserAgent(cfg.BuildVersion),
 		InsecureSkipVerify: &tlsSkipVerify,
 	}
 
@@ -142,8 +154,14 @@ func cooldownFilter(store storage.Store) decision.Filter {
 
 // Run starts the LAPI stream and processes decisions until ctx is cancelled.
 func (b *Bouncer) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	if err := b.stream.Init(); err != nil {
 		return err
+	}
+	if b.stream.APIClient != nil && b.stream.APIClient.GetClient() != nil && b.cfg.LAPITimeout > 0 {
+		b.stream.APIClient.GetClient().Timeout = b.cfg.LAPITimeout
 	}
 
 	// Start metrics / health HTTP server.
@@ -173,7 +191,23 @@ func (b *Bouncer) Run(ctx context.Context) error {
 	go runJanitor(ctx, b.store, b.cfg.JanitorInterval)
 
 	// Start worker pool for concurrent reporting.
-	b.pool = newWorkerPool(ctx, b.cfg.WorkerCount, b.cfg.WorkerBuffer, b.store, b.sinks)
+	b.pool = newWorkerPool(ctx, b.cfg.WorkerCount, b.cfg.WorkerBuffer, b.store, b.sinks, b.telemetry)
+
+	if b.cfg.UsageMetricsEnabled && b.telemetry != nil {
+		sender := telemetry.NewSender(
+			b.cfg.BuildVersion,
+			time.Now().UTC(),
+			b.cfg.UsageMetricsInterval,
+			b.telemetry,
+			telemetry.PushFunc(b.pushUsageMetrics),
+		)
+		go func() {
+			log.Info().
+				Dur("interval", b.cfg.UsageMetricsInterval).
+				Msg("usage-metrics sender started")
+			sender.Run(ctx)
+		}()
+	}
 
 	go b.stream.Run(ctx)
 
@@ -240,6 +274,20 @@ func (b *Bouncer) Run(ctx context.Context) error {
 	}
 }
 
+func (b *Bouncer) pushUsageMetrics(pushCtx context.Context, payload telemetry.MetricsPayload) error {
+	if b.stream == nil || b.stream.APIClient == nil {
+		return fmt.Errorf("lapi api client is not initialized")
+	}
+	apiClient := b.stream.APIClient
+	req, err := apiClient.NewRequest(http.MethodPost, apiClient.URLPrefix+"/usage-metrics", payload)
+	if err != nil {
+		return err
+	}
+	var out any
+	_, err = apiClient.Do(pushCtx, req, &out)
+	return err
+}
+
 // Healthy checks that all configured sinks can reach their upstream services.
 func (b *Bouncer) Healthy(ctx context.Context) error {
 	for _, s := range b.sinks {
@@ -253,7 +301,7 @@ func (b *Bouncer) Healthy(ctx context.Context) error {
 // Close performs graceful shutdown.
 func (b *Bouncer) Close() {
 	if b.httpSrv != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), closeShutdownTimeout)
 		defer cancel()
 		if err := b.httpSrv.Shutdown(ctx); err != nil {
 			log.Warn().Err(err).Msg("metrics server shutdown error")
@@ -327,6 +375,9 @@ func (b *Bouncer) processDecision(
 
 	if reported {
 		metrics.ReportsSent.Inc()
+		if b.telemetry != nil {
+			b.telemetry.IncProcessed()
+		}
 		if err := b.store.CooldownRecord(d.Value); err != nil {
 			log.Warn().Err(err).Str("ip", d.Value).Msg("failed to record cooldown")
 		}
@@ -339,6 +390,14 @@ func (b *Bouncer) processDecision(
 			Int("limit", b.store.QuotaLimit()).
 			Msg("quota updated")
 	}
+}
+
+func lapiUserAgent(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	}
+	return fmt.Sprintf("cs-abuseipdb-bouncer/%s", v)
 }
 
 // ptrStr safely dereferences a *string, returning "" for nil pointers.

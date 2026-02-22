@@ -11,6 +11,7 @@ import (
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/metrics"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/sink"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/storage"
+	"github.com/developingchet/cs-abuseipdb-bouncer/internal/telemetry"
 )
 
 type workerJob struct{ d *decision.Decision }
@@ -21,16 +22,24 @@ type workerPool struct {
 	activeCount atomic.Int64
 	store       storage.Store
 	sinks       []sink.Sink
+	counter     *telemetry.Counter
 }
 
 // newWorkerPool creates and starts count worker goroutines, each reading from a
 // buffered channel of capacity buf. Workers are stopped by cancelling ctx and
 // then calling stop().
-func newWorkerPool(ctx context.Context, count, buf int, store storage.Store, sinks []sink.Sink) *workerPool {
+func newWorkerPool(
+	ctx context.Context,
+	count, buf int,
+	store storage.Store,
+	sinks []sink.Sink,
+	counter *telemetry.Counter,
+) *workerPool {
 	p := &workerPool{
 		jobCh: make(chan workerJob, buf),
 		store: store,
 		sinks: sinks,
+		counter: counter,
 	}
 	for i := 0; i < count; i++ {
 		p.wg.Add(1)
@@ -112,5 +121,8 @@ func (p *workerPool) processJob(ctx context.Context, job workerJob) {
 	if reported {
 		metrics.ReportsSent.Inc()
 		metrics.QuotaRemaining.Set(float64(p.store.QuotaRemaining()))
+		if p.counter != nil {
+			p.counter.IncProcessed()
+		}
 	}
 }

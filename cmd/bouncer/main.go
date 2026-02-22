@@ -28,6 +28,23 @@ var (
 	date    = "unknown"
 )
 
+type runtimeBouncer interface {
+	Run(ctx context.Context) error
+	Healthy(ctx context.Context) error
+	Close()
+}
+
+var (
+	loadConfig = config.Load
+	registerMetrics = metrics.Register
+	newSignalContext = func(parent context.Context) (context.Context, context.CancelFunc) {
+		return signal.NotifyContext(parent, syscall.SIGTERM, syscall.SIGINT)
+	}
+	newRuntime = func(cfg *config.Config, sinks []sink.Sink) (runtimeBouncer, error) {
+		return bouncer.New(cfg, sinks)
+	}
+)
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		log.Error().Err(err).Msg("fatal")
@@ -72,21 +89,22 @@ and reports malicious IPs to AbuseIPDB in real-time.`,
 }
 
 func runBouncer(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("configuration error: %w", err)
 	}
+	cfg.BuildVersion = version
 
 	initLogging(cfg.LogLevel, cfg.LogFormat)
 
-	metrics.Register()
+	registerMetrics()
 
 	sinks := buildSinks(cfg)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, cancel := newSignalContext(context.Background())
 	defer cancel()
 
-	b, err := bouncer.New(cfg, sinks)
+	b, err := newRuntime(cfg, sinks)
 	if err != nil {
 		return fmt.Errorf("bouncer init: %w", err)
 	}
@@ -96,17 +114,18 @@ func runBouncer(cmd *cobra.Command, args []string) error {
 }
 
 func runHealthcheck(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("configuration error: %w", err)
 	}
+	cfg.BuildVersion = version
 
 	initLogging("error", cfg.LogFormat)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	sinks := buildSinks(cfg)
-	b, err := bouncer.New(cfg, sinks)
+	b, err := newRuntime(cfg, sinks)
 	if err != nil {
 		return err
 	}

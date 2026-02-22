@@ -16,6 +16,15 @@ var (
 	bucketQuota    = []byte("quota")
 	bucketCooldown = []byte("cooldown")
 	keyToday       = []byte("today")
+
+	boltOpenFn                = bolt.Open
+	marshalQuotaRecord        = json.Marshal
+	createBucketIfNotExistsFn = func(tx *bolt.Tx, name []byte) (*bolt.Bucket, error) {
+		return tx.CreateBucketIfNotExists(name)
+	}
+	deleteBucketKeyFn = func(b *bolt.Bucket, key []byte) error {
+		return b.Delete(key)
+	}
 )
 
 // quotaRecord is the JSON shape stored in the quota bucket.
@@ -36,17 +45,17 @@ type BoltStore struct {
 // required buckets. limit is the daily report cap; cooldown is the per-IP
 // suppression window.
 func Open(path string, limit int, cooldown time.Duration) (*BoltStore, error) {
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 2 * time.Second})
+	db, err := boltOpenFn(path, 0o600, &bolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("storage: open %s: %w", path, err)
 	}
 
 	// Ensure buckets exist.
 	if err := db.Update(func(tx *bolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(bucketQuota); err != nil {
+		if _, err := createBucketIfNotExistsFn(tx, bucketQuota); err != nil {
 			return err
 		}
-		_, err := tx.CreateBucketIfNotExists(bucketCooldown)
+		_, err := createBucketIfNotExistsFn(tx, bucketCooldown)
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -89,7 +98,7 @@ func (s *BoltStore) QuotaRecord() error {
 		}
 		rec.Count++
 
-		data, err := json.Marshal(rec)
+		data, err := marshalQuotaRecord(rec)
 		if err != nil {
 			return err
 		}
@@ -166,7 +175,7 @@ func (s *BoltStore) CooldownPrune() error {
 			}
 		}
 		for _, k := range toDelete {
-			if err := b.Delete(k); err != nil {
+			if err := deleteBucketKeyFn(b, k); err != nil {
 				return err
 			}
 		}
@@ -190,7 +199,7 @@ func (s *BoltStore) QuotaConsume() (bool, error) {
 		}
 		rec.Count++
 		allowed = true
-		data, err := json.Marshal(rec)
+		data, err := marshalQuotaRecord(rec)
 		if err != nil {
 			return err
 		}

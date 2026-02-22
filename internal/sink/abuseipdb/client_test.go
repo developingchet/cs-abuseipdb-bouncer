@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,34 @@ func buildClient(reportURL, checkURL string) *Client {
 		ReportURL: reportURL,
 		CheckURL:  checkURL,
 	})
+}
+
+func buildFastClient(reportURL, checkURL string) *Client {
+	return NewClient(ClientConfig{
+		APIKey:         "test-key",
+		Precheck:       false,
+		ReportURL:      reportURL,
+		CheckURL:       checkURL,
+		MaxRetries:     3,
+		InitialBackoff: time.Millisecond,
+		SleepFn:        func(time.Duration) {},
+	})
+}
+
+func TestNewClient_Defaults(t *testing.T) {
+	c := NewClient(ClientConfig{APIKey: "test-key"})
+	assert.Equal(t, defaultReportURL, c.reportURL)
+	assert.Equal(t, defaultCheckURL, c.checkURL)
+	assert.Equal(t, defaultMaxRetries, c.maxRetries)
+	assert.Equal(t, defaultInitialBackoff, c.initialBackoff)
+	require.NotNil(t, c.httpClient)
+	require.NotNil(t, c.httpClient.Transport)
+}
+
+func TestClient_NameAndClose(t *testing.T) {
+	c := NewClient(ClientConfig{APIKey: "test-key"})
+	assert.Equal(t, "abuseipdb", c.Name())
+	require.NoError(t, c.Close())
 }
 
 func TestReport_Success(t *testing.T) {
@@ -106,18 +135,65 @@ func TestReport_RateLimit429(t *testing.T) {
 	assert.Equal(t, 1, calls)
 }
 
+func TestReport_RateLimit429_ContextCancelledDuringSleep(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"errors":[{"detail":"Try again in 30 seconds."}]}`)
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientConfig{
+		APIKey:         "test-key",
+		ReportURL:      srv.URL,
+		CheckURL:       srv.URL,
+		MaxRetries:     3,
+		InitialBackoff: time.Millisecond,
+		SleepFn:        func(time.Duration) { time.Sleep(500 * time.Millisecond) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := c.Report(ctx, &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
+	require.Error(t, err)
+	assert.True(t, strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "context canceled"))
+	assert.Equal(t, 1, calls)
+}
+
+func TestReport_NetworkError_ContextCancelledDuringBackoff(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:         "test-key",
+		ReportURL:      "http://127.0.0.1:1",
+		CheckURL:       "http://127.0.0.1:1",
+		MaxRetries:     3,
+		InitialBackoff: 500 * time.Millisecond,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := c.Report(ctx, &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
+	require.Error(t, err)
+	assert.True(t, strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "context canceled"))
+}
+
 func TestReport_NetworkError_Retries(t *testing.T) {
 	// Point at a URL that will refuse connections.
-	c := buildClient("http://127.0.0.1:1", "http://127.0.0.1:1")
+	c := NewClient(ClientConfig{
+		APIKey:         "test-key",
+		ReportURL:      "http://127.0.0.1:1",
+		CheckURL:       "http://127.0.0.1:1",
+		MaxRetries:     3,
+		InitialBackoff: time.Millisecond,
+		SleepFn:        func(time.Duration) {},
+	})
 	start := time.Now()
 	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
 	elapsed := time.Since(start)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "attempts")
-	// With 3 attempts and 5s+10s backoff the total wait should be at least 5 seconds.
-	// We verify at least 1 retry happened (backoff > 0).
-	assert.GreaterOrEqual(t, elapsed, time.Second)
+	assert.Less(t, elapsed, time.Second)
 }
 
 func TestReport_UnexpectedStatus_Retries(t *testing.T) {
@@ -129,23 +205,30 @@ func TestReport_UnexpectedStatus_Retries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// The initial retry backoff is 5s. A 2s context expires during the first
-	// backoff wait, so only one attempt is made before the context cancels.
-	// The important property being tested is that a 5xx response returns an error.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 
-	c := buildClient(srv.URL, srv.URL)
+	c := NewClient(ClientConfig{
+		APIKey:         "test-key",
+		ReportURL:      srv.URL,
+		CheckURL:       srv.URL,
+		MaxRetries:     3,
+		InitialBackoff: 100 * time.Millisecond,
+	})
 	err := c.Report(ctx, &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
 	assert.Error(t, err)
 	assert.GreaterOrEqual(t, calls, 1)
 }
 
+func TestReportWithRetry_ZeroRetriesConfigured(t *testing.T) {
+	c := &Client{maxRetries: 0}
+	err := c.reportWithRetry(context.Background(), "203.0.113.42", "15", "comment")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all 0 attempts exhausted")
+}
+
 // TestReport_5xx_ExhaustsAllRetries verifies that the client makes exactly
 // maxRetries attempts before giving up on persistent 5xx responses.
-// NOTE: this test takes ~15 s (5 s + 10 s retry backoffs) — same as the
-// network-error retry test. It is not marked short because slow test
-// precedent is already set by TestReport_NetworkError_Retries.
 func TestReport_5xx_ExhaustsAllRetries(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -155,14 +238,13 @@ func TestReport_5xx_ExhaustsAllRetries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// No context timeout: allow all three attempts plus the two backoff sleeps.
-	c := buildClient(srv.URL, srv.URL)
+	c := buildFastClient(srv.URL, srv.URL)
 	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "503",
 		"final error must identify the HTTP status code")
-	assert.Equal(t, maxRetries, calls,
+	assert.Equal(t, c.maxRetries, calls,
 		"client must attempt exactly maxRetries times before giving up on 5xx")
 }
 
@@ -186,6 +268,34 @@ func TestReport_ContextCancelled(t *testing.T) {
 	c := buildClient(srv.URL, srv.URL)
 	err := c.Report(ctx, &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
 	assert.Error(t, err)
+}
+
+func TestDoReport_InvalidURL(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:    "test-key",
+		ReportURL: "://bad-url",
+		CheckURL:  defaultCheckURL,
+	})
+	_, _, err := c.doReport(context.Background(), "203.0.113.42", "15", "test")
+	require.Error(t, err)
+}
+
+func TestCheckWhitelisted_RequestBuildError(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:   "test-key",
+		CheckURL: "://bad-url",
+	})
+	_, err := c.checkWhitelisted(context.Background(), "203.0.113.42")
+	require.Error(t, err)
+}
+
+func TestCheckWhitelisted_NetworkError(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:   "test-key",
+		CheckURL: "http://127.0.0.1:1",
+	})
+	_, err := c.checkWhitelisted(context.Background(), "203.0.113.42")
+	require.Error(t, err)
 }
 
 func TestReport_WithPrecheck_Whitelisted(t *testing.T) {
@@ -319,6 +429,30 @@ func TestHealthy_Unauthorized(t *testing.T) {
 	err := c.Healthy(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid API key")
+}
+
+func TestHealthy_RequestBuildError(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:   "test-key",
+		CheckURL: "://bad-url",
+	})
+	err := c.Healthy(context.Background())
+	require.Error(t, err)
+}
+
+func TestHealthy_NetworkError(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:   "test-key",
+		CheckURL: "http://127.0.0.1:1",
+	})
+	err := c.Healthy(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unreachable")
+}
+
+func TestSleepWithContext_ZeroDuration(t *testing.T) {
+	c := NewClient(ClientConfig{APIKey: "test-key"})
+	require.NoError(t, c.sleepWithContext(context.Background(), 0))
 }
 
 func TestExtractRetryAfter(t *testing.T) {
