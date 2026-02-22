@@ -38,6 +38,17 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 - API keys loaded from environment variables only; 80-character hex keys and Bearer tokens are automatically redacted from log output
 - Docker image is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC) and accompanied by a CycloneDX SBOM on every release
 
+## Compliance
+
+This bouncer follows the CrowdSec Remediation Component Specification for Stream Mode, User-Agent identification, and LAPI Telemetry.
+
+This repository is a reporter-only outbound sink:
+- AppSec forwarding is intentionally omitted.
+- CAPTCHA/remediation HTML is intentionally omitted.
+- No inline traffic enforcement is implemented (no reverse proxy, firewall, or routing logic).
+
+LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
+
 ## How It Works
 
 ```
@@ -45,7 +56,7 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 │       CrowdSec LAPI          │
 │       (port 8080 / 8443)     │
 └──────────────┬───────────────┘
-               │ polls every 30s
+               │ polls every 10s
                │ GET /v1/decisions/stream
                │
                v
@@ -94,6 +105,8 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 
 New decisions stream continuously from the LAPI. Each decision passes through seven stateless pre-queue filters, then is handed off to a concurrent worker pool. Workers perform the quota and cooldown checks atomically (single bbolt transaction each) before dispatching to the AbuseIPDB sink. State is persisted to a named Docker volume so daily counts and per-IP cooldowns survive container restarts.
 
+In parallel, a background usage-metrics worker aggregates successful AbuseIPDB submissions and pushes telemetry to `POST /v1/usage-metrics` every `30m` by default (`USAGE_METRICS_INTERVAL`, minimum `10m`).
+
 ## Quick Start
 
 **Prerequisites:**
@@ -140,6 +153,7 @@ Expected startup log (JSON format):
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Design Rationale](docs/DESIGN.md)** - Architecture decisions and security analysis
 - **[External References](docs/REFERENCES.md)** - Links to official documentation
+- **[Compliance Checklist](COMPLIANCE.md)** - Technical mapping to CrowdSec remediation-component requirements
 
 ## Repository Structure
 
@@ -177,6 +191,10 @@ Expected startup log (JSON format):
 │   │       └── mapper_test.go
 │   ├── metrics/
 │   │   └── metrics.go                   # Prometheus metric definitions
+│   ├── telemetry/
+│   │   ├── payload.go                   # LAPI /usage-metrics payload builder
+│   │   ├── counter.go                   # In-memory processed counter for telemetry windows
+│   │   └── sender.go                    # Background telemetry push worker
 │   └── storage/
 │       ├── store.go                     # Storage interface
 │       ├── bbolt.go                     # ACID bbolt persistence (quota + cooldown, atomic ops)
@@ -209,8 +227,15 @@ All configuration is via environment variables. Required:
 
 ```bash
 CROWDSEC_LAPI_URL=http://crowdsec:8080   # URL of the CrowdSec LAPI
-CROWDSEC_LAPI_KEY=<from cscli bouncers add>
 ABUSEIPDB_API_KEY=<from abuseipdb.com/account/api>
+
+# LAPI auth mode A (API key)
+CROWDSEC_LAPI_KEY=<from cscli bouncers add>
+
+# LAPI auth mode B (mTLS)
+# CROWDSEC_LAPI_TLS_CERT_PATH=/etc/crowdsec/client.crt
+# CROWDSEC_LAPI_TLS_KEY_PATH=/etc/crowdsec/client.key
+# CROWDSEC_LAPI_TLS_CA_CERT_PATH=/etc/crowdsec/ca.crt
 ```
 
 Optional (all have defaults):
@@ -220,12 +245,14 @@ ABUSEIPDB_DAILY_LIMIT=1000    # Free=1000, Webmaster=3000, Premium=50000
 ABUSEIPDB_PRECHECK=false      # Pre-check /check endpoint before reporting
 ABUSEIPDB_MIN_DURATION=0      # Skip decisions shorter than N seconds
 COOLDOWN_DURATION=15m         # Per-IP cooldown window
-POLL_INTERVAL=30s             # LAPI polling frequency
+POLL_INTERVAL=10s             # LAPI polling frequency
 LOG_LEVEL=info                # trace, debug, info, warn, error
 LOG_FORMAT=json               # json or text
 TLS_SKIP_VERIFY=false         # Skip TLS verification (self-signed certs)
 DATA_DIR=/data                # Directory for state.db (mount a named volume here)
 METRICS_ADDR=:9090            # Address for /metrics, /healthz, /readyz (empty = disabled)
+USAGE_METRICS_ENABLED=true    # Enable periodic LAPI /usage-metrics push
+USAGE_METRICS_INTERVAL=30m    # Telemetry push interval (min 10m)
 CONFIG_FILE=                  # Optional path to YAML config file
 
 # Concurrent worker pool (v2.0)

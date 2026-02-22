@@ -6,8 +6,10 @@ Complete reference for all configuration options in the CrowdSec AbuseIPDB Bounc
 
 - [Environment Variables](#environment-variables)
   - [Required](#required-variables)
+    - [LAPI Authentication (API Key OR mTLS)](#lapi-authentication-api-key-or-mtls)
   - [Optional — AbuseIPDB](#optional--abuseipdb)
   - [Optional — Storage & Metrics](#optional--storage--metrics)
+    - [Usage Metrics Telemetry](#usage-metrics-telemetry)
   - [Optional — Networking & Logging](#optional--networking--logging)
   - [Optional — Concurrency](#optional--concurrency)
 - [Scenario Category Mapping](#scenario-category-mapping)
@@ -33,23 +35,32 @@ URL of the CrowdSec Local API. Use the Docker service name when CrowdSec is on t
 
 TLS is supported natively. For self-signed certificates, also set `TLS_SKIP_VERIFY=true`.
 
-#### CROWDSEC_LAPI_KEY
+#### LAPI Authentication (API Key OR mTLS)
 
-**Type:** String
-**Required:** Yes
+The bouncer supports two mutually exclusive authentication modes for LAPI connectivity:
+- API key mode (`CROWDSEC_LAPI_KEY` or `CROWDSEC_LAPI_KEY_FILE`)
+- mTLS mode (`CROWDSEC_LAPI_TLS_CERT_PATH` + `CROWDSEC_LAPI_TLS_KEY_PATH`, optional custom CA)
 
-The bouncer API key used to authenticate with the LAPI.
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `CROWDSEC_LAPI_KEY` | Yes (API key mode) | _(unset)_ | LAPI API key generated with `cscli bouncers add abuseipdb-bouncer`. |
+| `CROWDSEC_LAPI_KEY_FILE` | No | _(unset)_ | File-based alternative to `CROWDSEC_LAPI_KEY`; ignored when direct key is set. |
+| `CROWDSEC_LAPI_TLS_CERT_PATH` | Yes (mTLS mode) | _(unset)_ | Client certificate path for mTLS auth to LAPI. |
+| `CROWDSEC_LAPI_TLS_KEY_PATH` | Yes (mTLS mode) | _(unset)_ | Client private key path for mTLS auth to LAPI. |
+| `CROWDSEC_LAPI_TLS_CA_CERT_PATH` | No | _(unset)_ | Optional custom CA bundle path for validating the LAPI server certificate. |
+| `TLS_SKIP_VERIFY` | No | `false` | Disables TLS certificate verification. Security-sensitive; use only for controlled/self-signed environments. |
 
-**Generate:**
+Validation rules:
+- Configure exactly one LAPI auth mode: API key **or** mTLS.
+- In mTLS mode, cert and key must both be set.
+- API key and mTLS credentials cannot be used simultaneously.
+
+**Generate API key (API key mode):**
 ```bash
 docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 ```
 
-The key is shown only once — copy it immediately. This key grants read access to all CrowdSec decisions; treat it as a credential. The value is automatically redacted from log output by the built-in `RedactWriter`.
-
-**Docker secrets / file alternative:** Set `CROWDSEC_LAPI_KEY_FILE` to the path of a
-file containing the key (e.g. a Docker Swarm secret mounted at
-`/run/secrets/crowdsec_lapi_key`). The direct env var takes precedence if both are set.
+The key is shown once and grants read access to decisions; treat it as a sensitive credential. API keys and Bearer tokens are redacted from logs by `RedactWriter`.
 
 #### ABUSEIPDB_API_KEY
 
@@ -194,6 +205,21 @@ Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no
 
 **Security note:** Bind to `127.0.0.1:9090` or a private network interface if the metrics endpoint should not be reachable from outside the host.
 
+#### Usage Metrics Telemetry
+
+Periodic usage telemetry is pushed to the CrowdSec LAPI endpoint `POST /v1/usage-metrics`.
+The payload reports processed decisions (successful AbuseIPDB submissions) and component metadata.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `USAGE_METRICS_ENABLED` | No | `true` | Enables/disables periodic LAPI telemetry push worker. |
+| `USAGE_METRICS_INTERVAL` | No | `30m` | Push interval for `/v1/usage-metrics`. Minimum accepted value: `10m`. |
+
+Operational notes:
+- Telemetry counters are in-memory and windowed per push interval.
+- Failed pushes are retried on the next interval without discarding the failed window count.
+- Payload contains component/runtime metadata and aggregate processed counts only (no request bodies, API keys, or sensitive user data).
+
 #### CONFIG_FILE
 
 **Type:** String (path)
@@ -229,10 +255,10 @@ Expired entries are pruned from `state.db` by the background janitor (see `JANIT
 #### POLL_INTERVAL
 
 **Type:** Duration string
-**Default:** `30s`
+**Default:** `10s`
 **Minimum:** `10s`
 
-How often the bouncer polls the LAPI for new decisions. Values below 10 s are rejected at startup. 30 s is appropriate for most deployments.
+How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 10 s are rejected at startup.
 
 #### LOG_LEVEL
 
