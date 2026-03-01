@@ -14,7 +14,8 @@ type MemStore struct {
 	cooldownDur time.Duration
 	quotaCount  int
 	quotaDate   string
-	cooldowns   map[string]int64 // sanitized IP → Unix expiry
+	cooldowns   map[string]int64    // sanitized IP → Unix expiry
+	retries     map[string]retryEntry // sanitized IP → retry entry
 }
 
 // NewMemStore creates a fresh in-memory store with the given quota limit and
@@ -25,6 +26,7 @@ func NewMemStore(limit int, cooldown time.Duration) *MemStore {
 		cooldownDur: cooldown,
 		quotaDate:   utcDateString(),
 		cooldowns:   make(map[string]int64),
+		retries:     make(map[string]retryEntry),
 	}
 }
 
@@ -133,6 +135,54 @@ func (m *MemStore) CooldownConsume(ip string) (bool, error) {
 	}
 	m.cooldowns[key] = now.Add(m.cooldownDur).Unix()
 	return true, nil
+}
+
+// --- Retry queue ---
+
+func (m *MemStore) RetryEnqueue(ip, scenario string, retryAfter time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := sanitizeIP(ip)
+	attempts := 1
+	if e, ok := m.retries[key]; ok {
+		attempts = e.Attempts + 1
+	}
+	m.retries[key] = retryEntry{IP: ip, Scenario: scenario, RetryAfter: retryAfter.Unix(), Attempts: attempts}
+	return nil
+}
+
+func (m *MemStore) RetryDequeue(now time.Time, limit int) ([]RetryRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	nowUnix := now.Unix()
+	var records []RetryRecord
+	for k, e := range m.retries {
+		if len(records) >= limit {
+			break
+		}
+		if e.RetryAfter <= nowUnix {
+			records = append(records, RetryRecord{
+				BucketKey: k,
+				IP:        e.IP,
+				Scenario:  e.Scenario,
+				Attempts:  e.Attempts,
+			})
+		}
+	}
+	return records, nil
+}
+
+func (m *MemStore) RetryDelete(bucketKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.retries, bucketKey)
+	return nil
+}
+
+func (m *MemStore) RetryCount() (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.retries), nil
 }
 
 // DBPath returns "" because MemStore is in-memory.

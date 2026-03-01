@@ -15,6 +15,7 @@ var _ Store = (*BoltStore)(nil)
 var (
 	bucketQuota    = []byte("quota")
 	bucketCooldown = []byte("cooldown")
+	bucketRetry    = []byte("retry")
 	keyToday       = []byte("today")
 
 	boltOpenFn                = bolt.Open
@@ -31,6 +32,14 @@ var (
 type quotaRecord struct {
 	Count int    `json:"count"`
 	Date  string `json:"date"`
+}
+
+// retryEntry is the JSON shape stored in the retry bucket.
+type retryEntry struct {
+	IP         string `json:"ip"`       // original IP (may differ from key due to sanitization)
+	Scenario   string `json:"scenario"`
+	RetryAfter int64  `json:"retry_after"` // Unix timestamp
+	Attempts   int    `json:"attempts"`
 }
 
 // BoltStore is an ACID bbolt-backed implementation of Store.
@@ -55,7 +64,10 @@ func Open(path string, limit int, cooldown time.Duration) (*BoltStore, error) {
 		if _, err := createBucketIfNotExistsFn(tx, bucketQuota); err != nil {
 			return err
 		}
-		_, err := createBucketIfNotExistsFn(tx, bucketCooldown)
+		if _, err := createBucketIfNotExistsFn(tx, bucketCooldown); err != nil {
+			return err
+		}
+		_, err := createBucketIfNotExistsFn(tx, bucketRetry)
 		return err
 	}); err != nil {
 		_ = db.Close()
@@ -227,6 +239,72 @@ func (s *BoltStore) CooldownConsume(ip string) (bool, error) {
 		return b.Put(key, val)
 	})
 	return allowed, err
+}
+
+// --- Retry queue ---
+
+// RetryEnqueue persists ip+scenario for retry after retryAfter.
+// If an entry for this IP already exists, its Attempts counter is incremented.
+func (s *BoltStore) RetryEnqueue(ip, scenario string, retryAfter time.Time) error {
+	key := []byte(sanitizeIP(ip))
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRetry)
+		entry := retryEntry{IP: ip, Scenario: scenario, RetryAfter: retryAfter.Unix(), Attempts: 1}
+		if existing := b.Get(key); len(existing) > 0 {
+			var e retryEntry
+			if err := json.Unmarshal(existing, &e); err == nil {
+				entry.Attempts = e.Attempts + 1
+			}
+		}
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, data)
+	})
+}
+
+// RetryDequeue returns up to limit entries whose retryAfter <= now.Unix().
+func (s *BoltStore) RetryDequeue(now time.Time, limit int) ([]RetryRecord, error) {
+	nowUnix := now.Unix()
+	var records []RetryRecord
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRetry)
+		c := b.Cursor()
+		for k, v := c.First(); k != nil && len(records) < limit; k, v = c.Next() {
+			var e retryEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				continue
+			}
+			if e.RetryAfter <= nowUnix {
+				records = append(records, RetryRecord{
+					BucketKey: string(k),
+					IP:        e.IP,
+					Scenario:  e.Scenario,
+					Attempts:  e.Attempts,
+				})
+			}
+		}
+		return nil
+	})
+	return records, err
+}
+
+// RetryDelete removes the entry identified by bucketKey from the retry bucket.
+func (s *BoltStore) RetryDelete(bucketKey string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRetry).Delete([]byte(bucketKey))
+	})
+}
+
+// RetryCount returns the number of entries in the retry bucket.
+func (s *BoltStore) RetryCount() (int, error) {
+	var count int
+	err := s.db.View(func(tx *bolt.Tx) error {
+		count = tx.Bucket(bucketRetry).Stats().KeyN
+		return nil
+	})
+	return count, err
 }
 
 // DBPath returns the filesystem path of the database file.

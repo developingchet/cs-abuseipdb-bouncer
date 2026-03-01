@@ -43,6 +43,26 @@ var (
 		Name: "cs_abuseipdb_bbolt_db_size_bytes",
 		Help: "Size of state.db in bytes, updated by the janitor.",
 	})
+
+	// RetryQueueSize is the number of rate-limited decisions currently waiting
+	// in the retry queue, refreshed by the janitor on each tick.
+	RetryQueueSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "cs_abuseipdb_retry_queue_size",
+		Help: "Number of rate-limited decisions currently waiting in the retry queue.",
+	})
+
+	// RetryAttempts counts total retry attempts submitted from the retry queue.
+	RetryAttempts = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "cs_abuseipdb_retry_attempts_total",
+		Help: "Total retry attempts submitted from the retry queue.",
+	})
+
+	// RetryQueueEnqueued counts total decisions enqueued into the retry queue
+	// after receiving an HTTP 429 response from AbuseIPDB.
+	RetryQueueEnqueued = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "cs_abuseipdb_retry_queue_enqueued_total",
+		Help: "Total decisions enqueued into the retry queue after a 429 response.",
+	})
 )
 
 // Register registers all metrics with prometheus.DefaultRegisterer.
@@ -61,5 +81,8 @@ func RegisterWith(reg prometheus.Registerer) {
 		APIErrors,
 		QuotaRemaining,
 		BboltDBSizeBytes,
+		RetryQueueSize,
+		RetryAttempts,
+		RetryQueueEnqueued,
 	)
 }

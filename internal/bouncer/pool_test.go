@@ -251,3 +251,94 @@ func TestWorkerPool_ProcessJob_QuotaConsumeError(t *testing.T) {
 func uniqueIP(i int) string {
 	return fmt.Sprintf("10.%d.%d.%d", i/65025, (i/255)%255, i%255+1)
 }
+
+// rateLimitSink returns ErrRateLimit for every Report call.
+type rateLimitSink struct {
+	retryAfter time.Duration
+}
+
+func (s *rateLimitSink) Name() string { return "rate-limit" }
+func (s *rateLimitSink) Report(_ context.Context, _ *sink.Report) error {
+	return sink.ErrRateLimit{RetryAfter: s.retryAfter}
+}
+func (s *rateLimitSink) Healthy(_ context.Context) error { return nil }
+func (s *rateLimitSink) Close() error                    { return nil }
+
+// retryEnqueueStore records RetryEnqueue calls for assertions.
+type retryEnqueueStore struct {
+	*storage.MemStore
+	mu       sync.Mutex
+	enqueued []string
+}
+
+func (s *retryEnqueueStore) RetryEnqueue(ip, _ string, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enqueued = append(s.enqueued, ip)
+	return nil
+}
+
+func (s *retryEnqueueStore) enqueuedIPs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.enqueued))
+	copy(out, s.enqueued)
+	return out
+}
+
+func TestWorkerPool_RateLimit_EnqueuesRetry(t *testing.T) {
+	base := storage.NewMemStore(100, time.Minute)
+	store := &retryEnqueueStore{MemStore: base}
+	rl := &rateLimitSink{retryAfter: 30 * time.Second}
+
+	pool := &workerPool{
+		store: store,
+		sinks: []sink.Sink{rl},
+	}
+	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.42")})
+
+	ips := store.enqueuedIPs()
+	if len(ips) != 1 {
+		t.Fatalf("expected 1 enqueued retry, got %d", len(ips))
+	}
+	if ips[0] != "203.0.113.42" {
+		t.Fatalf("expected enqueued IP 203.0.113.42, got %s", ips[0])
+	}
+}
+
+func TestWorkerPool_RetryJob_SkipsCooldownQuota(t *testing.T) {
+	// Store with exhausted quota — a normal job would be blocked.
+	store := storage.NewMemStore(0, time.Hour)
+	cs := &countingSink{}
+
+	pool := &workerPool{
+		store: store,
+		sinks: []sink.Sink{cs},
+	}
+
+	// isRetry=true skips quota/cooldown gates.
+	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.42"), isRetry: true})
+
+	if got := cs.count(); got != 1 {
+		t.Errorf("expected 1 report for retry job (skips quota), got %d", got)
+	}
+}
+
+func TestWorkerPool_RetryJob_OnRateLimit_ReEnqueues(t *testing.T) {
+	base := storage.NewMemStore(100, time.Minute)
+	store := &retryEnqueueStore{MemStore: base}
+	rl := &rateLimitSink{retryAfter: 60 * time.Second}
+
+	pool := &workerPool{
+		store: store,
+		sinks: []sink.Sink{rl},
+	}
+
+	// A retry job that gets rate-limited again must re-enqueue.
+	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.42"), isRetry: true})
+
+	ips := store.enqueuedIPs()
+	if len(ips) != 1 {
+		t.Fatalf("expected 1 re-enqueued retry, got %d", len(ips))
+	}
+}

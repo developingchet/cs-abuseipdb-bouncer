@@ -2,8 +2,10 @@ package bouncer
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -14,7 +16,10 @@ import (
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/telemetry"
 )
 
-type workerJob struct{ d *decision.Decision }
+type workerJob struct {
+	d       *decision.Decision
+	isRetry bool
+}
 
 type workerPool struct {
 	jobCh       chan workerJob
@@ -78,28 +83,30 @@ func (p *workerPool) processJob(ctx context.Context, job workerJob) {
 	p.activeCount.Add(1)
 	defer p.activeCount.Add(-1)
 
-	// 1. CooldownConsume first — so a cooldown hit never wastes quota.
-	allowed, err := p.store.CooldownConsume(d.Value)
-	if err != nil {
-		log.Warn().Err(err).Str("ip", d.Value).Msg("cooldown consume error")
-		return
-	}
-	if !allowed {
-		metrics.DecisionsSkipped.WithLabelValues("cooldown").Inc()
-		log.Debug().Str("ip", d.Value).Msg("decision filtered (cooldown)")
-		return
-	}
+	if !job.isRetry {
+		// 1. CooldownConsume first — so a cooldown hit never wastes quota.
+		allowed, err := p.store.CooldownConsume(d.Value)
+		if err != nil {
+			log.Warn().Err(err).Str("ip", d.Value).Msg("cooldown consume error")
+			return
+		}
+		if !allowed {
+			metrics.DecisionsSkipped.WithLabelValues("cooldown").Inc()
+			log.Debug().Str("ip", d.Value).Msg("decision filtered (cooldown)")
+			return
+		}
 
-	// 2. QuotaConsume — only reached if the IP passed the cooldown gate.
-	allowed, err = p.store.QuotaConsume()
-	if err != nil {
-		log.Warn().Err(err).Msg("quota consume error")
-		return
-	}
-	if !allowed {
-		metrics.DecisionsSkipped.WithLabelValues("quota").Inc()
-		log.Debug().Str("ip", d.Value).Msg("decision filtered (quota)")
-		return
+		// 2. QuotaConsume — only reached if the IP passed the cooldown gate.
+		allowed, err = p.store.QuotaConsume()
+		if err != nil {
+			log.Warn().Err(err).Msg("quota consume error")
+			return
+		}
+		if !allowed {
+			metrics.DecisionsSkipped.WithLabelValues("quota").Inc()
+			log.Debug().Str("ip", d.Value).Msg("decision filtered (quota)")
+			return
+		}
 	}
 
 	// 3. Report to all sinks.
@@ -111,6 +118,18 @@ func (p *workerPool) processJob(ctx context.Context, job workerJob) {
 	reported := false
 	for _, s := range p.sinks {
 		if err := s.Report(ctx, r); err != nil {
+			var rl sink.ErrRateLimit
+			if errors.As(err, &rl) {
+				retryAt := time.Now().Add(rl.RetryAfter)
+				if enqErr := p.store.RetryEnqueue(d.Value, d.Scenario, retryAt); enqErr != nil {
+					log.Error().Err(enqErr).Str("ip", d.Value).Msg("failed to enqueue retry -- decision lost")
+					metrics.DecisionsSkipped.WithLabelValues("retry-enqueue-failed").Inc()
+				} else {
+					log.Warn().Str("ip", d.Value).Time("retry_at", retryAt).Msg("rate-limited: queued for retry")
+					metrics.RetryQueueEnqueued.Inc()
+				}
+				continue
+			}
 			log.Error().Err(err).Str("sink", s.Name()).Str("ip", d.Value).Msg("report failed")
 			continue
 		}

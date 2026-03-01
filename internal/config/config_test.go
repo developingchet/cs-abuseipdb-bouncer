@@ -54,7 +54,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, time.Duration(0), cfg.MinDuration)
 	assert.Equal(t, "info", cfg.LogLevel)
 	assert.Equal(t, "json", cfg.LogFormat)
-	assert.Equal(t, 10*time.Second, cfg.PollInterval)
+	assert.Equal(t, 2*time.Second, cfg.PollInterval)
 	assert.Equal(t, 10*time.Second, cfg.LAPITimeout)
 	assert.Equal(t, 15*time.Minute, cfg.CooldownDuration)
 	assert.Equal(t, "/data", cfg.DataDir)
@@ -63,6 +63,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.False(t, cfg.TLSSkipVerify)
 	assert.True(t, cfg.UsageMetricsEnabled)
 	assert.Equal(t, 30*time.Minute, cfg.UsageMetricsInterval)
+	assert.Equal(t, 30*time.Second, cfg.RetryCheckInterval)
 }
 
 func TestLoad_DefaultLayerError(t *testing.T) {
@@ -337,7 +338,7 @@ func TestLoad_InvalidDailyLimit(t *testing.T) {
 
 func TestLoad_PollIntervalTooLow(t *testing.T) {
 	env := validEnv()
-	env["POLL_INTERVAL"] = "5s"
+	env["POLL_INTERVAL"] = "1s"
 	setEnv(t, env)
 
 	_, err := Load()
@@ -430,6 +431,7 @@ func TestLoad_DataDir_NullByteRejected(t *testing.T) {
 		WorkerCount:          4,
 		WorkerBuffer:         256,
 		JanitorInterval:      time.Minute,
+		RetryCheckInterval:   30 * time.Second,
 		UsageMetricsInterval: 30 * time.Minute,
 	}
 	err := cfg.validate()
@@ -775,6 +777,26 @@ func writeTLSFiles(t *testing.T) (certPath string, keyPath string, caPath string
 	require.NoError(t, os.WriteFile(keyPath, []byte("dummy key"), 0o600))
 	require.NoError(t, os.WriteFile(caPath, []byte("dummy ca"), 0o600))
 	return certPath, keyPath, caPath
+}
+
+func TestLoad_RetryCheckInterval_TooShort(t *testing.T) {
+	env := validEnv()
+	env["RETRY_CHECK_INTERVAL"] = "5s"
+	setEnv(t, env)
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RETRY_CHECK_INTERVAL")
+}
+
+func TestLoad_RetryCheckInterval_Custom(t *testing.T) {
+	env := validEnv()
+	env["RETRY_CHECK_INTERVAL"] = "2m"
+	setEnv(t, env)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Minute, cfg.RetryCheckInterval)
 }
 
 func TestEnvBool(t *testing.T) {

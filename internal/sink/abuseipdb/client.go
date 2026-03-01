@@ -183,12 +183,10 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 			metrics.APIErrors.WithLabelValues("rate_limit").Inc()
 			waitSec := extractRetryAfter(body)
 			log.Warn().
-				Int("sleep", waitSec).
-				Msg("rate-limited -- check daily quota at abuseipdb.com/account")
-			if err := c.sleepWithContext(ctx, time.Duration(waitSec)*time.Second); err != nil {
-				return err
-			}
-			return fmt.Errorf("rate limited for ip=%s", ip)
+				Str("ip", ip).
+				Int("retry_after_sec", waitSec).
+				Msg("rate-limited -- decision queued for retry")
+			return sink.ErrRateLimit{RetryAfter: time.Duration(waitSec) * time.Second}
 
 		case http.StatusUnauthorized:
 			metrics.APIErrors.WithLabelValues("auth").Inc()

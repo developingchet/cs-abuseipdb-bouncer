@@ -32,6 +32,9 @@ func runJanitor(ctx context.Context, store storage.Store, interval time.Duration
 					metrics.BboltDBSizeBytes.Set(float64(info.Size()))
 				}
 			}
+			if count, err := store.RetryCount(); err == nil {
+				metrics.RetryQueueSize.Set(float64(count))
+			}
 		}
 	}
 }

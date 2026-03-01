@@ -44,6 +44,7 @@ type Config struct {
 	WorkerCount          int           `koanf:"worker_count"`
 	WorkerBuffer         int           `koanf:"worker_buffer"`
 	JanitorInterval      time.Duration `koanf:"janitor_interval"`
+	RetryCheckInterval   time.Duration `koanf:"retry_check_interval"`
 	UsageMetricsEnabled  bool          `koanf:"usage_metrics_enabled"`
 	UsageMetricsInterval time.Duration `koanf:"usage_metrics_interval"`
 
@@ -66,7 +67,7 @@ var defaults = map[string]any{
 	"abuseipdb_precheck":     false,
 	"log_level":              "info",
 	"log_format":             "json",
-	"poll_interval":          10 * time.Second,
+	"poll_interval":          2 * time.Second,
 	"lapi_timeout":           10 * time.Second,
 	"cooldown_duration":      15 * time.Minute,
 	"data_dir":               "/data",
@@ -76,6 +77,7 @@ var defaults = map[string]any{
 	"worker_count":           4,
 	"worker_buffer":          256,
 	"janitor_interval":       5 * time.Minute,
+	"retry_check_interval":   30 * time.Second,
 	"usage_metrics_enabled":  true,
 	"usage_metrics_interval": 30 * time.Minute,
 }
@@ -202,8 +204,8 @@ func (c *Config) validate() error {
 	if c.DailyLimit < 1 || c.DailyLimit > 50000 {
 		errs = append(errs, "ABUSEIPDB_DAILY_LIMIT must be between 1 and 50000")
 	}
-	if c.PollInterval < 10*time.Second {
-		errs = append(errs, "POLL_INTERVAL must be at least 10s")
+	if c.PollInterval < 2*time.Second {
+		errs = append(errs, "POLL_INTERVAL must be at least 2s")
 	}
 	if c.LAPITimeout < 200*time.Millisecond {
 		errs = append(errs, "LAPI_TIMEOUT must be at least 200ms")
@@ -228,6 +230,9 @@ func (c *Config) validate() error {
 	}
 	if c.JanitorInterval < 30*time.Second {
 		errs = append(errs, "JANITOR_INTERVAL must be at least 30s")
+	}
+	if c.RetryCheckInterval < 10*time.Second {
+		errs = append(errs, "RETRY_CHECK_INTERVAL must be at least 10s")
 	}
 	if c.UsageMetricsInterval < 10*time.Minute {
 		errs = append(errs, "USAGE_METRICS_INTERVAL must be at least 10m")

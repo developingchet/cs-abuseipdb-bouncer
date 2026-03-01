@@ -23,10 +23,32 @@ type Store interface {
 	// single bolt.Update. Returns (true, nil) if allowed, (false, nil) if active.
 	CooldownConsume(ip string) (bool, error)
 
+	// RetryEnqueue persists a rate-limited decision for later retry.
+	// retryAfter is the wall-clock time after which the decision may be retried.
+	RetryEnqueue(ip, scenario string, retryAfter time.Time) error
+
+	// RetryDequeue returns up to limit entries whose retryAfter <= now.
+	RetryDequeue(now time.Time, limit int) ([]RetryRecord, error)
+
+	// RetryDelete removes the entry identified by bucketKey (as returned by
+	// RetryDequeue). It is a no-op if the key does not exist.
+	RetryDelete(bucketKey string) error
+
+	// RetryCount returns the total number of entries in the retry queue.
+	RetryCount() (int, error)
+
 	// DBPath returns the filesystem path of the database file ("" for in-memory).
 	DBPath() string
 
 	Close() error
+}
+
+// RetryRecord is a single entry returned by RetryDequeue.
+type RetryRecord struct {
+	BucketKey string // sanitized key used with RetryDelete
+	IP        string // original unsanitized IP for the HTTP call
+	Scenario  string
+	Attempts  int
 }
 
 // sanitizeIP replaces characters that are invalid or ambiguous in bbolt keys.

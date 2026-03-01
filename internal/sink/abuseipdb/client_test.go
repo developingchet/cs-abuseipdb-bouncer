@@ -3,6 +3,7 @@ package abuseipdb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -124,18 +125,20 @@ func TestReport_RateLimit429(t *testing.T) {
 	defer srv.Close()
 
 	c := buildClient(srv.URL, srv.URL)
-	// Set a very short timeout so the wait extracted from the body (1s) is bounded.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
 
-	err := c.Report(ctx, &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "rate limited")
-	// 429 should not retry -- fails immediately after sleeping Retry-After duration
+	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
+	require.Error(t, err)
+
+	// Must return ErrRateLimit with correct RetryAfter.
+	var rl sink.ErrRateLimit
+	assert.True(t, errors.As(err, &rl), "expected ErrRateLimit, got %T: %v", err, err)
+	assert.Equal(t, 1*time.Second, rl.RetryAfter)
+
+	// Must make exactly 1 HTTP call (no retry loop, no sleep).
 	assert.Equal(t, 1, calls)
 }
 
-func TestReport_RateLimit429_ContextCancelledDuringSleep(t *testing.T) {
+func TestReport_RateLimit429_ReturnsImmediatelyNoSleep(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -144,21 +147,21 @@ func TestReport_RateLimit429_ContextCancelledDuringSleep(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// sleepFn panics if called — 429 must return immediately without sleeping.
 	c := NewClient(ClientConfig{
 		APIKey:         "test-key",
 		ReportURL:      srv.URL,
 		CheckURL:       srv.URL,
 		MaxRetries:     3,
 		InitialBackoff: time.Millisecond,
-		SleepFn:        func(time.Duration) { time.Sleep(500 * time.Millisecond) },
+		SleepFn:        func(time.Duration) { panic("sleepFn must not be called on 429") },
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	err := c.Report(ctx, &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
+	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
 	require.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "context canceled"))
+
+	var rl sink.ErrRateLimit
+	assert.True(t, errors.As(err, &rl))
 	assert.Equal(t, 1, calls)
 }
 

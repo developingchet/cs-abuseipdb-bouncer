@@ -118,9 +118,13 @@ func (s *janitorErrorStore) QuotaConsume() (bool, error)          { return true,
 func (s *janitorErrorStore) CooldownAllow(string) bool            { return true }
 func (s *janitorErrorStore) CooldownRecord(string) error          { return nil }
 func (s *janitorErrorStore) CooldownPrune() error                 { return errors.New("prune failed") }
-func (s *janitorErrorStore) CooldownConsume(string) (bool, error) { return true, nil }
-func (s *janitorErrorStore) DBPath() string                       { return "" }
-func (s *janitorErrorStore) Close() error                         { return nil }
+func (s *janitorErrorStore) CooldownConsume(string) (bool, error)                        { return true, nil }
+func (s *janitorErrorStore) RetryEnqueue(string, string, time.Time) error                { return nil }
+func (s *janitorErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
+func (s *janitorErrorStore) RetryDelete(string) error                                    { return nil }
+func (s *janitorErrorStore) RetryCount() (int, error)                                    { return 0, nil }
+func (s *janitorErrorStore) DBPath() string                                              { return "" }
+func (s *janitorErrorStore) Close() error                                                { return nil }
 
 func TestJanitor_PruneErrorBranch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

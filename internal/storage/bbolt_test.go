@@ -367,3 +367,96 @@ func TestBoltStore_QuotaConsume_MarshalError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marshal failed")
 }
+
+// --- Retry queue tests ---
+
+func TestBoltStore_Retry_EnqueueDequeue(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	past := time.Now().Add(-time.Second)
+
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past))
+
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "203.0.113.42", records[0].IP)
+	assert.Equal(t, "crowdsecurity/ssh-bf", records[0].Scenario)
+	assert.Equal(t, 1, records[0].Attempts)
+	assert.NotEmpty(t, records[0].BucketKey)
+}
+
+func TestBoltStore_Retry_IgnoresFutureEntries(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	future := time.Now().Add(time.Hour)
+
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future))
+
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	assert.Empty(t, records)
+}
+
+func TestBoltStore_Retry_Delete(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	past := time.Now().Add(-time.Second)
+
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past))
+
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+
+	require.NoError(t, s.RetryDelete(records[0].BucketKey))
+
+	records2, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	assert.Empty(t, records2)
+}
+
+func TestBoltStore_Retry_Count(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	count, err := s.RetryCount()
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(time.Hour)))
+	require.NoError(t, s.RetryEnqueue("10.0.0.2", "s2", time.Now().Add(time.Hour)))
+
+	count, err = s.RetryCount()
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+}
+
+func TestBoltStore_Retry_IncrementAttempts(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	retryAt := time.Now().Add(-time.Second)
+
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt))
+
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, 2, records[0].Attempts)
+}
+
+func TestBoltStore_Retry_PersistsAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	s1, err := Open(path, 1000, time.Minute)
+	require.NoError(t, err)
+	retryAt := time.Now().Add(-time.Second)
+	require.NoError(t, s1.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt))
+	require.NoError(t, s1.Close())
+
+	s2, err := Open(path, 1000, time.Minute)
+	require.NoError(t, err)
+	defer s2.Close()
+
+	records, err := s2.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "203.0.113.42", records[0].IP)
+}

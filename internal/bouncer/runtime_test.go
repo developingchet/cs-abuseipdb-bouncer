@@ -59,6 +59,7 @@ func baseRunConfig(t *testing.T, lapiURL string) *config.Config {
 		WorkerCount:          1,
 		WorkerBuffer:         16,
 		JanitorInterval:      time.Hour,
+		RetryCheckInterval:   time.Hour,
 		UsageMetricsEnabled:  false,
 		UsageMetricsInterval: 30 * time.Minute,
 		BuildVersion:         "vtest",
@@ -535,9 +536,13 @@ func (s *errorStore) QuotaConsume() (bool, error)          { return true, nil }
 func (s *errorStore) CooldownAllow(string) bool            { return true }
 func (s *errorStore) CooldownRecord(string) error          { return nil }
 func (s *errorStore) CooldownPrune() error                 { return errors.New("prune failed") }
-func (s *errorStore) CooldownConsume(string) (bool, error) { return true, nil }
-func (s *errorStore) DBPath() string                       { return "" }
-func (s *errorStore) Close() error                         { return errors.New("close failed") }
+func (s *errorStore) CooldownConsume(string) (bool, error)                        { return true, nil }
+func (s *errorStore) RetryEnqueue(string, string, time.Time) error                { return nil }
+func (s *errorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
+func (s *errorStore) RetryDelete(string) error                                    { return nil }
+func (s *errorStore) RetryCount() (int, error)                                    { return 0, nil }
+func (s *errorStore) DBPath() string                                              { return "" }
+func (s *errorStore) Close() error                                                { return errors.New("close failed") }
 
 type closeErrSink struct{}
 
@@ -568,6 +573,10 @@ func (s *recordErrorStore) QuotaConsume() (bool, error)          { return true, 
 func (s *recordErrorStore) CooldownAllow(string) bool            { return true }
 func (s *recordErrorStore) CooldownRecord(string) error          { return errors.New("cooldown record failed") }
 func (s *recordErrorStore) CooldownPrune() error                 { return nil }
-func (s *recordErrorStore) CooldownConsume(string) (bool, error) { return true, nil }
-func (s *recordErrorStore) DBPath() string                       { return "" }
-func (s *recordErrorStore) Close() error                         { return nil }
+func (s *recordErrorStore) CooldownConsume(string) (bool, error)                        { return true, nil }
+func (s *recordErrorStore) RetryEnqueue(string, string, time.Time) error                { return nil }
+func (s *recordErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
+func (s *recordErrorStore) RetryDelete(string) error                                    { return nil }
+func (s *recordErrorStore) RetryCount() (int, error)                                    { return 0, nil }
+func (s *recordErrorStore) DBPath() string                                              { return "" }
+func (s *recordErrorStore) Close() error                                                { return nil }

@@ -189,6 +189,8 @@ func (b *Bouncer) Run(ctx context.Context) error {
 
 	// Start background janitor (cooldown pruning + DB size metric).
 	go runJanitor(ctx, b.store, b.cfg.JanitorInterval)
+	// Start retry worker (re-submits rate-limited decisions after Retry-After expires).
+	go b.runRetryWorker(ctx)
 
 	// Start worker pool for concurrent reporting.
 	b.pool = newWorkerPool(ctx, b.cfg.WorkerCount, b.cfg.WorkerBuffer, b.store, b.sinks, b.telemetry)
@@ -389,6 +391,58 @@ func (b *Bouncer) processDecision(
 			Int("daily", b.store.QuotaCount()).
 			Int("limit", b.store.QuotaLimit()).
 			Msg("quota updated")
+	}
+}
+
+// runRetryWorker periodically flushes the retry queue, re-submitting
+// rate-limited decisions once their Retry-After window has elapsed.
+func (b *Bouncer) runRetryWorker(ctx context.Context) {
+	b.flushRetryQueue(ctx) // drain immediately on startup in case of crash during retry window
+	ticker := time.NewTicker(b.cfg.RetryCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.flushRetryQueue(ctx)
+		}
+	}
+}
+
+// flushRetryQueue dequeues past-due retry entries and re-submits them to the
+// worker pool. The entry is deleted from bbolt before submission so the pool
+// worker does not need to call back into storage on success. The loss window
+// (crash between Delete and pool execution) is sub-millisecond and matches
+// the risk profile of the existing in-memory channel.
+func (b *Bouncer) flushRetryQueue(ctx context.Context) {
+	count, err := b.store.RetryCount()
+	if err != nil || count == 0 {
+		return
+	}
+	entries, err := b.store.RetryDequeue(time.Now(), 50)
+	if err != nil {
+		log.Warn().Err(err).Msg("retry worker: dequeue failed")
+		return
+	}
+	for _, e := range entries {
+		if err := b.store.RetryDelete(e.BucketKey); err != nil {
+			log.Warn().Err(err).Str("ip", e.IP).Msg("retry worker: delete failed, skipping")
+			continue
+		}
+		d := &decision.Decision{
+			Action:   "add",
+			Origin:   "crowdsec",
+			Scenario: e.Scenario,
+			Scope:    "ip",
+			Value:    e.IP,
+		}
+		if !b.pool.submit(workerJob{d: d, isRetry: true}) {
+			metrics.DecisionsSkipped.WithLabelValues("retry-buffer-full").Inc()
+			log.Warn().Str("ip", e.IP).Msg("retry worker: pool buffer full, decision lost")
+		} else {
+			metrics.RetryAttempts.Inc()
+		}
 	}
 }
 

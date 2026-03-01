@@ -158,3 +158,124 @@ func TestMemStore_CooldownPrune_DeletesExpiredEntries(t *testing.T) {
 		t.Fatal("expected expired entry to be deleted by prune")
 	}
 }
+
+func TestMemStore_Retry_EnqueueDequeue(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+	past := time.Now().Add(-time.Second)
+
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+
+	records, err := m.RetryDequeue(time.Now(), 10)
+	if err != nil {
+		t.Fatalf("RetryDequeue: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].IP != "203.0.113.42" {
+		t.Fatalf("IP mismatch: got %q", records[0].IP)
+	}
+	if records[0].Scenario != "crowdsecurity/ssh-bf" {
+		t.Fatalf("Scenario mismatch: got %q", records[0].Scenario)
+	}
+	if records[0].Attempts != 1 {
+		t.Fatalf("Attempts mismatch: got %d", records[0].Attempts)
+	}
+}
+
+func TestMemStore_Retry_IgnoresFutureEntries(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+	future := time.Now().Add(time.Hour)
+
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+
+	records, err := m.RetryDequeue(time.Now(), 10)
+	if err != nil {
+		t.Fatalf("RetryDequeue: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("expected 0 records for future entry, got %d", len(records))
+	}
+}
+
+func TestMemStore_Retry_Delete(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+	past := time.Now().Add(-time.Second)
+
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+	records, err := m.RetryDequeue(time.Now(), 10)
+	if err != nil {
+		t.Fatalf("RetryDequeue: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+
+	if err := m.RetryDelete(records[0].BucketKey); err != nil {
+		t.Fatalf("RetryDelete: %v", err)
+	}
+
+	records2, err := m.RetryDequeue(time.Now(), 10)
+	if err != nil {
+		t.Fatalf("RetryDequeue after delete: %v", err)
+	}
+	if len(records2) != 0 {
+		t.Fatalf("expected 0 records after delete, got %d", len(records2))
+	}
+}
+
+func TestMemStore_Retry_Count(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+
+	count, err := m.RetryCount()
+	if err != nil {
+		t.Fatalf("RetryCount: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected count=0, got %d", count)
+	}
+
+	if err := m.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+	if err := m.RetryEnqueue("10.0.0.2", "s2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+
+	count, err = m.RetryCount()
+	if err != nil {
+		t.Fatalf("RetryCount: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected count=2, got %d", count)
+	}
+}
+
+func TestMemStore_Retry_IncrementAttempts(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+	retryAt := time.Now().Add(-time.Second)
+
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt); err != nil {
+		t.Fatalf("RetryEnqueue #1: %v", err)
+	}
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt); err != nil {
+		t.Fatalf("RetryEnqueue #2: %v", err)
+	}
+
+	records, err := m.RetryDequeue(time.Now(), 10)
+	if err != nil {
+		t.Fatalf("RetryDequeue: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].Attempts != 2 {
+		t.Fatalf("expected Attempts=2, got %d", records[0].Attempts)
+	}
+}
