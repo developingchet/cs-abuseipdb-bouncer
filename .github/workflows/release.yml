@@ -103,6 +103,7 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          version: v0.69.2
 
   # ── 4. Multi-arch Docker push ────────────────────────────────────────────────
   docker-push:
