@@ -799,6 +799,95 @@ func TestLoad_RetryCheckInterval_Custom(t *testing.T) {
 	assert.Equal(t, 2*time.Minute, cfg.RetryCheckInterval)
 }
 
+func TestStripQuotes(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"'hello'", "hello"},
+		{`"hello"`, "hello"},
+		{"hello", "hello"},
+		{"'/data'", "/data"},
+		{`"/data"`, "/data"},
+		{"''", ""},
+		{`""`, ""},
+		{"  '/data'  ", "/data"},
+		{"'mismatched\"", "'mismatched\""},
+		{"\"mismatched'", "\"mismatched'"},
+		{"no quotes at all", "no quotes at all"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, stripQuotes(tt.input))
+		})
+	}
+}
+
+func TestLoad_QuotedEnvVars(t *testing.T) {
+	t.Run("single-quoted string", func(t *testing.T) {
+		env := validEnv()
+		env["DATA_DIR"] = "'/data/state'"
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "/data/state", cfg.DataDir)
+	})
+
+	t.Run("double-quoted string", func(t *testing.T) {
+		env := validEnv()
+		env["DATA_DIR"] = `"/data/state"`
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "/data/state", cfg.DataDir)
+	})
+
+	t.Run("single-quoted duration", func(t *testing.T) {
+		env := validEnv()
+		env["POLL_INTERVAL"] = "'45s'"
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 45*time.Second, cfg.PollInterval)
+	})
+
+	t.Run("double-quoted duration", func(t *testing.T) {
+		env := validEnv()
+		env["COOLDOWN_DURATION"] = `"20m"`
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 20*time.Minute, cfg.CooldownDuration)
+	})
+
+	t.Run("single-quoted ABUSEIPDB_MIN_DURATION", func(t *testing.T) {
+		env := validEnv()
+		env["ABUSEIPDB_MIN_DURATION"] = "'5m'"
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Minute, cfg.MinDuration)
+	})
+
+	t.Run("double-quoted LAPI URL", func(t *testing.T) {
+		env := validEnv()
+		env["CROWDSEC_LAPI_URL"] = `"http://crowdsec:8080"`
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "http://crowdsec:8080", cfg.LAPIURL)
+	})
+
+	t.Run("single-quoted STATE_DIR legacy compat", func(t *testing.T) {
+		env := validEnv()
+		env["STATE_DIR"] = "'/legacy/state'"
+		setEnv(t, env)
+		cfg, err := Load()
+		require.NoError(t, err)
+		assert.Equal(t, "/legacy/state", cfg.DataDir)
+	})
+}
+
 func TestEnvBool(t *testing.T) {
 	tests := []struct {
 		input    string

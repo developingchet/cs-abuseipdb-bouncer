@@ -87,7 +87,13 @@ var (
 		return k.Load(confmap.Provider(defaults, "."), nil)
 	}
 	loadEnvLayer = func(k *koanf.Koanf) error {
-		return k.Load(env.Provider("", ".", envKeyMapper), nil)
+		return k.Load(env.ProviderWithValue("", ".", func(key, value string) (string, interface{}) {
+			k := envKeyMapper(key)
+			if k == "" {
+				return "", nil
+			}
+			return k, stripQuotes(value)
+		}), nil)
 	}
 	statFile = os.Stat
 	openFile = os.Open
@@ -98,6 +104,19 @@ func envKeyMapper(s string) string {
 		return "" // skip; handled manually below
 	}
 	return strings.ToLower(s)
+}
+
+// stripQuotes removes a single layer of surrounding single or double quotes
+// from s (after trimming whitespace). This lets env vars set as KEY='value'
+// or KEY="value" (common in .env files and some shells) work transparently.
+func stripQuotes(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 // Load reads configuration from (lowest → highest priority):
@@ -113,7 +132,7 @@ func Load() (*Config, error) {
 	}
 
 	// Layer 2: optional YAML file.
-	if cfgFile := os.Getenv("CONFIG_FILE"); cfgFile != "" {
+	if cfgFile := stripQuotes(os.Getenv("CONFIG_FILE")); cfgFile != "" {
 		if err := k.Load(file.Provider(cfgFile), yaml.Parser()); err != nil {
 			return nil, fmt.Errorf("config: load file %s: %w", cfgFile, err)
 		}
@@ -141,7 +160,7 @@ func Load() (*Config, error) {
 
 	// ABUSEIPDB_MIN_DURATION: accept both Go duration strings ("5m") and
 	// plain integer seconds ("300") for backwards-compatibility.
-	if raw := strings.TrimSpace(os.Getenv("ABUSEIPDB_MIN_DURATION")); raw != "" {
+	if raw := stripQuotes(os.Getenv("ABUSEIPDB_MIN_DURATION")); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil {
 			cfg.MinDuration = d
 		} else {
@@ -153,8 +172,8 @@ func Load() (*Config, error) {
 	}
 
 	// Legacy compat: honour STATE_DIR if DATA_DIR is not explicitly set.
-	if os.Getenv("DATA_DIR") == "" && os.Getenv("STATE_DIR") != "" {
-		cfg.DataDir = os.Getenv("STATE_DIR")
+	if stripQuotes(os.Getenv("DATA_DIR")) == "" && stripQuotes(os.Getenv("STATE_DIR")) != "" {
+		cfg.DataDir = stripQuotes(os.Getenv("STATE_DIR"))
 	}
 
 	// Resolve secrets from files (Docker / Kubernetes secrets).
@@ -310,10 +329,10 @@ func parseIPWhitelist(raw string) ([]netip.Prefix, error) {
 // envKey+"_FILE" (Docker / Kubernetes secrets convention).
 // Returns empty string if neither source provides a value.
 func resolveFileSecret(envKey string) string {
-	if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+	if v := stripQuotes(os.Getenv(envKey)); v != "" {
 		return v
 	}
-	path := strings.TrimSpace(os.Getenv(envKey + "_FILE"))
+	path := stripQuotes(os.Getenv(envKey + "_FILE"))
 	if path == "" {
 		return ""
 	}
