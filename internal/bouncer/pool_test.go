@@ -324,6 +324,25 @@ func TestWorkerPool_RetryJob_SkipsCooldownQuota(t *testing.T) {
 	}
 }
 
+type retryEnqueueErrStore struct{ *storage.MemStore }
+
+func (s *retryEnqueueErrStore) RetryEnqueue(string, string, time.Time) error {
+	return errors.New("enqueue failed")
+}
+
+func TestWorkerPool_RateLimit_EnqueueError(t *testing.T) {
+	base := storage.NewMemStore(100, time.Minute)
+	store := &retryEnqueueErrStore{MemStore: base}
+	rl := &rateLimitSink{retryAfter: 30 * time.Second}
+
+	pool := &workerPool{
+		store: store,
+		sinks: []sink.Sink{rl},
+	}
+	// Must not panic; the decision is lost but no crash.
+	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.42")})
+}
+
 func TestWorkerPool_RetryJob_OnRateLimit_ReEnqueues(t *testing.T) {
 	base := storage.NewMemStore(100, time.Minute)
 	store := &retryEnqueueStore{MemStore: base}

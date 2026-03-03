@@ -37,6 +37,11 @@ type Store interface {
 	// RetryCount returns the total number of entries in the retry queue.
 	RetryCount() (int, error)
 
+	// RetryPrune deletes retry entries whose retryAfter timestamp is older than
+	// olderThan. This prevents the retry bucket from growing unboundedly after
+	// a crash or prolonged rate-limit period.
+	RetryPrune(olderThan time.Time) error
+
 	// DBPath returns the filesystem path of the database file ("" for in-memory).
 	DBPath() string
 

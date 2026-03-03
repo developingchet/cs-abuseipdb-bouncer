@@ -54,3 +54,10 @@ func TestReport_FieldAssignment(t *testing.T) {
 	assert.Equal(t, "crowdsecurity/ssh-bf", r.Scenario)
 	assert.Equal(t, 24*time.Hour, r.Duration)
 }
+
+// TestErrRateLimit_Error verifies that ErrRateLimit formats its message correctly.
+func TestErrRateLimit_Error(t *testing.T) {
+	err := sink.ErrRateLimit{RetryAfter: 30 * time.Second}
+	assert.Contains(t, err.Error(), "30s")
+	assert.Contains(t, err.Error(), "rate limited")
+}

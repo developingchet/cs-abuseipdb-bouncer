@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -20,6 +21,7 @@ var (
 
 	boltOpenFn                = bolt.Open
 	marshalQuotaRecord        = json.Marshal
+	marshalRetryEntry         = json.Marshal
 	createBucketIfNotExistsFn = func(tx *bolt.Tx, name []byte) (*bolt.Bucket, error) {
 		return tx.CreateBucketIfNotExists(name)
 	}
@@ -137,6 +139,7 @@ func decodeQuota(data []byte) quotaRecord {
 	}
 	var rec quotaRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
+		log.Warn().Err(err).Msg("quota record corrupt, resetting")
 		return quotaRecord{Date: utcDateString()}
 	}
 	return rec
@@ -256,7 +259,7 @@ func (s *BoltStore) RetryEnqueue(ip, scenario string, retryAfter time.Time) erro
 				entry.Attempts = e.Attempts + 1
 			}
 		}
-		data, err := json.Marshal(entry)
+		data, err := marshalRetryEntry(entry)
 		if err != nil {
 			return err
 		}
@@ -274,6 +277,7 @@ func (s *BoltStore) RetryDequeue(now time.Time, limit int) ([]RetryRecord, error
 		for k, v := c.First(); k != nil && len(records) < limit; k, v = c.Next() {
 			var e retryEntry
 			if err := json.Unmarshal(v, &e); err != nil {
+				log.Warn().Err(err).Str("key", string(k)).Msg("retry entry corrupt, skipping")
 				continue
 			}
 			if e.RetryAfter <= nowUnix {
@@ -293,7 +297,7 @@ func (s *BoltStore) RetryDequeue(now time.Time, limit int) ([]RetryRecord, error
 // RetryDelete removes the entry identified by bucketKey from the retry bucket.
 func (s *BoltStore) RetryDelete(bucketKey string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketRetry).Delete([]byte(bucketKey))
+		return deleteBucketKeyFn(tx.Bucket(bucketRetry), []byte(bucketKey))
 	})
 }
 
@@ -305,6 +309,33 @@ func (s *BoltStore) RetryCount() (int, error) {
 		return nil
 	})
 	return count, err
+}
+
+// RetryPrune deletes retry entries whose retryAfter timestamp is older than
+// olderThan, preventing unbounded growth after a crash or long rate-limit period.
+func (s *BoltStore) RetryPrune(olderThan time.Time) error {
+	threshold := olderThan.Unix()
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRetry)
+		c := b.Cursor()
+		var toDelete [][]byte
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			var e retryEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				toDelete = append(toDelete, append([]byte{}, k...))
+				continue
+			}
+			if e.RetryAfter < threshold {
+				toDelete = append(toDelete, append([]byte{}, k...))
+			}
+		}
+		for _, k := range toDelete {
+			if err := deleteBucketKeyFn(b, k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // DBPath returns the filesystem path of the database file.

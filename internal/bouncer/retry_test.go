@@ -2,6 +2,7 @@ package bouncer
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -111,6 +112,79 @@ func TestFlushRetryQueue_BufferFull_Metrics(t *testing.T) {
 	}
 }
 
+// dequeueErrStore returns an error from RetryDequeue so we can exercise the
+// error branch in flushRetryQueue.
+type dequeueErrStore struct{ *storage.MemStore }
+
+func (s *dequeueErrStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error) {
+	return nil, errors.New("dequeue failed")
+}
+
+// retryCountErrStore returns an error from RetryCount.
+type retryCountErrStore struct{ *storage.MemStore }
+
+func (s *retryCountErrStore) RetryCount() (int, error) {
+	return 0, errors.New("count failed")
+}
+
+// retryDeleteErrStore returns an error from RetryDelete.
+type retryDeleteErrStore struct{ *storage.MemStore }
+
+func (s *retryDeleteErrStore) RetryDelete(string) error {
+	return errors.New("delete failed")
+}
+
+func TestFlushRetryQueue_DequeueError(t *testing.T) {
+	base := storage.NewMemStore(1000, time.Minute)
+
+	// Seed a past-due entry so RetryCount > 0 and the dequeue path is reached.
+	past := time.Now().Add(-time.Second)
+	if err := base.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+
+	store := &dequeueErrStore{MemStore: base}
+	cs := &countingSink{}
+	b := buildTestBouncer(store, []sink.Sink{cs})
+
+	// Must not panic even when dequeue returns an error.
+	b.flushRetryQueue(context.Background())
+	b.pool.stop()
+
+	if got := cs.count(); got != 0 {
+		t.Errorf("expected 0 reports when dequeue fails, got %d", got)
+	}
+}
+
+func TestRunRetryWorker_TickerFires(t *testing.T) {
+	store := storage.NewMemStore(1000, time.Minute)
+	cs := &countingSink{}
+
+	cfg := &config.Config{RetryCheckInterval: 20 * time.Millisecond}
+	b := &Bouncer{cfg: cfg, store: store, sinks: []sink.Sink{cs}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	b.pool = newWorkerPool(ctx, 1, 64, store, []sink.Sink{cs}, nil)
+
+	// Enqueue a past-due entry so a tick actually does something observable.
+	past := time.Now().Add(-time.Second)
+	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+
+	workerDone := make(chan struct{})
+	go func() {
+		b.runRetryWorker(ctx)
+		close(workerDone)
+	}()
+
+	// Wait long enough for at least one ticker interval.
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	b.pool.stop()
+	<-workerDone
+}
+
 func TestRunRetryWorker_DrainOnStartup(t *testing.T) {
 	store := storage.NewMemStore(1000, time.Minute)
 	cs := &countingSink{}
@@ -140,5 +214,55 @@ func TestRunRetryWorker_DrainOnStartup(t *testing.T) {
 
 	if got := cs.count(); got != 1 {
 		t.Errorf("expected 1 report from startup drain, got %d", got)
+	}
+}
+
+func TestFlushRetryQueue_CountError(t *testing.T) {
+	base := storage.NewMemStore(1000, time.Minute)
+	store := &retryCountErrStore{MemStore: base}
+	cs := &countingSink{}
+	b := buildTestBouncer(store, []sink.Sink{cs})
+
+	// Must not panic when RetryCount returns an error.
+	b.flushRetryQueue(context.Background())
+	b.pool.stop()
+
+	if got := cs.count(); got != 0 {
+		t.Errorf("expected 0 reports when RetryCount fails, got %d", got)
+	}
+}
+
+func TestFlushRetryQueue_EmptyQueue(t *testing.T) {
+	store := storage.NewMemStore(1000, time.Minute)
+	cs := &countingSink{}
+	b := buildTestBouncer(store, []sink.Sink{cs})
+
+	// Empty store — count == 0 branch must return early without panic.
+	b.flushRetryQueue(context.Background())
+	b.pool.stop()
+
+	if got := cs.count(); got != 0 {
+		t.Errorf("expected 0 reports for empty retry queue, got %d", got)
+	}
+}
+
+func TestFlushRetryQueue_DeleteError(t *testing.T) {
+	base := storage.NewMemStore(1000, time.Minute)
+
+	past := time.Now().Add(-time.Second)
+	if err := base.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+		t.Fatalf("RetryEnqueue: %v", err)
+	}
+
+	store := &retryDeleteErrStore{MemStore: base}
+	cs := &countingSink{}
+	b := buildTestBouncer(store, []sink.Sink{cs})
+
+	// Must not panic when RetryDelete fails; entry is skipped, no report.
+	b.flushRetryQueue(context.Background())
+	b.pool.stop()
+
+	if got := cs.count(); got != 0 {
+		t.Errorf("expected 0 reports when RetryDelete fails, got %d", got)
 	}
 }

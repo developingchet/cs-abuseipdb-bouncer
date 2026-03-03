@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -22,12 +21,11 @@ type workerJob struct {
 }
 
 type workerPool struct {
-	jobCh       chan workerJob
-	wg          sync.WaitGroup
-	activeCount atomic.Int64
-	store       storage.Store
-	sinks       []sink.Sink
-	counter     *telemetry.Counter
+	jobCh   chan workerJob
+	wg      sync.WaitGroup
+	store   storage.Store
+	sinks   []sink.Sink
+	counter *telemetry.Counter
 }
 
 // newWorkerPool creates and starts count worker goroutines, each reading from a
@@ -60,7 +58,7 @@ func (p *workerPool) submit(job workerJob) bool {
 	case p.jobCh <- job:
 		return true
 	default:
-		metrics.DecisionsSkipped.WithLabelValues("buffer-full").Inc()
+		metrics.DecisionsSkipped.WithLabelValues("buffer_full").Inc()
 		return false
 	}
 }
@@ -80,8 +78,6 @@ func (p *workerPool) runWorker(ctx context.Context) {
 
 func (p *workerPool) processJob(ctx context.Context, job workerJob) {
 	d := job.d
-	p.activeCount.Add(1)
-	defer p.activeCount.Add(-1)
 
 	if !job.isRetry {
 		// 1. CooldownConsume first — so a cooldown hit never wastes quota.
@@ -123,7 +119,7 @@ func (p *workerPool) processJob(ctx context.Context, job workerJob) {
 				retryAt := time.Now().Add(rl.RetryAfter)
 				if enqErr := p.store.RetryEnqueue(d.Value, d.Scenario, retryAt); enqErr != nil {
 					log.Error().Err(enqErr).Str("ip", d.Value).Msg("failed to enqueue retry -- decision lost")
-					metrics.DecisionsSkipped.WithLabelValues("retry-enqueue-failed").Inc()
+					metrics.DecisionsSkipped.WithLabelValues("retry_enqueue_failed").Inc()
 				} else {
 					log.Warn().Str("ip", d.Value).Time("retry_at", retryAt).Msg("rate-limited: queued for retry")
 					metrics.RetryQueueEnqueued.Inc()

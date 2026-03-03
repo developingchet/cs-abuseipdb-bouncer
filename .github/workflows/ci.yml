@@ -22,6 +22,9 @@ jobs:
       - name: Run tests (race detector)
         run: go test -race ./... -count=1 -timeout=120s
 
+      - name: Check coverage
+        run: bash scripts/test-coverage.sh
+
   # ── 2. Seccomp profile static validation ────────────────────────────────────
   validate-seccomp:
     name: Validate Seccomp Profile
@@ -118,3 +121,18 @@ jobs:
           echo ""
           echo "PASS: container started under seccomp profile."
           echo "      (runc exec fifo completed; bouncer exited normally on missing LAPI)"
+
+  # ── 4. Lint ──────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest

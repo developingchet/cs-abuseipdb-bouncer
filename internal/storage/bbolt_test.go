@@ -18,11 +18,13 @@ func installBoltSeams(t *testing.T) {
 	t.Helper()
 	origOpen := boltOpenFn
 	origMarshal := marshalQuotaRecord
+	origMarshalRetry := marshalRetryEntry
 	origCreateBucket := createBucketIfNotExistsFn
 	origDeleteKey := deleteBucketKeyFn
 	t.Cleanup(func() {
 		boltOpenFn = origOpen
 		marshalQuotaRecord = origMarshal
+		marshalRetryEntry = origMarshalRetry
 		createBucketIfNotExistsFn = origCreateBucket
 		deleteBucketKeyFn = origDeleteKey
 	})
@@ -355,6 +357,18 @@ func TestBoltStore_QuotaRecord_MarshalError(t *testing.T) {
 	assert.Contains(t, err.Error(), "marshal failed")
 }
 
+func TestBoltStore_RetryEnqueue_MarshalError(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+	marshalRetryEntry = func(any) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+
+	err := s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(-time.Second))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal failed")
+}
+
 func TestBoltStore_QuotaConsume_MarshalError(t *testing.T) {
 	installBoltSeams(t)
 	s := newTestStore(t, 1000, time.Minute)
@@ -459,4 +473,144 @@ func TestBoltStore_Retry_PersistsAcrossReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	assert.Equal(t, "203.0.113.42", records[0].IP)
+}
+
+func TestBoltStore_RetryDelete_Error(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+
+	past := time.Now().Add(-time.Second)
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past))
+
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+
+	deleteBucketKeyFn = func(*bolt.Bucket, []byte) error {
+		return errors.New("delete failed")
+	}
+
+	err = s.RetryDelete(records[0].BucketKey)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete failed")
+}
+
+func TestBoltStore_RetryPrune_RemovesOldEntries(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	// Enqueue a past entry (older than 25 hours — will be pruned).
+	veryOld := time.Now().Add(-25 * time.Hour)
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", veryOld))
+
+	// Enqueue a recent entry (1 hour ago — not pruned).
+	recentPast := time.Now().Add(-time.Hour)
+	require.NoError(t, s.RetryEnqueue("10.0.0.2", "s2", recentPast))
+
+	// Prune entries older than 24 hours.
+	require.NoError(t, s.RetryPrune(time.Now().Add(-24*time.Hour)))
+
+	count, err := s.RetryCount()
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "only the recent entry should remain after pruning")
+}
+
+func TestBoltStore_RetryPrune_CorruptEntry(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	// Inject a corrupt (non-JSON) entry directly into the retry bucket.
+	key := []byte("corrupt-key")
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRetry).Put(key, []byte("not-json"))
+	}))
+
+	// RetryPrune must delete corrupt entries without error.
+	require.NoError(t, s.RetryPrune(time.Now()))
+
+	count, err := s.RetryCount()
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "corrupt entry should be deleted by RetryPrune")
+}
+
+func TestBoltStore_RetryPrune_DeleteError(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+
+	// Inject an entry that is old enough to be pruned.
+	veryOld := time.Now().Add(-48 * time.Hour)
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", veryOld))
+
+	deleteBucketKeyFn = func(*bolt.Bucket, []byte) error {
+		return errors.New("delete failed")
+	}
+
+	err := s.RetryPrune(time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete failed")
+}
+
+func TestBoltStore_RetryDequeue_CorruptEntry(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	// Inject a corrupt (non-JSON) entry directly into the retry bucket.
+	key := []byte("corrupt-ip")
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRetry).Put(key, []byte("not-json"))
+	}))
+
+	// RetryDequeue must skip corrupt entries without error.
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	assert.Empty(t, records, "corrupt entry should be skipped by RetryDequeue")
+}
+
+func TestBoltStore_RetryEnqueue_CorruptExistingEntry(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	// Inject corrupt JSON for an existing IP key.
+	key := []byte(sanitizeIP("10.0.0.1"))
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRetry).Put(key, []byte("not-json"))
+	}))
+
+	// RetryEnqueue for the same IP — corrupt existing data means Attempts=1.
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(-time.Second)))
+
+	records, err := s.RetryDequeue(time.Now(), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, 1, records[0].Attempts, "corrupt existing data means Attempts should reset to 1")
+}
+
+func TestBoltStore_Open_CooldownBucketInitError(t *testing.T) {
+	installBoltSeams(t)
+	callCount := 0
+	origCreate := createBucketIfNotExistsFn
+	createBucketIfNotExistsFn = func(tx *bolt.Tx, name []byte) (*bolt.Bucket, error) {
+		callCount++
+		if callCount == 2 { // fail on cooldown bucket (second call)
+			return nil, errors.New("bucket init failed")
+		}
+		return origCreate(tx, name)
+	}
+
+	_, err := Open(filepath.Join(t.TempDir(), "state.db"), 1000, time.Minute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storage: init buckets")
+}
+
+func TestBoltStore_Open_RetryBucketInitError(t *testing.T) {
+	installBoltSeams(t)
+	callCount := 0
+	origCreate := createBucketIfNotExistsFn
+	createBucketIfNotExistsFn = func(tx *bolt.Tx, name []byte) (*bolt.Bucket, error) {
+		callCount++
+		if callCount == 3 { // fail on retry bucket (third call)
+			return nil, errors.New("bucket init failed")
+		}
+		return origCreate(tx, name)
+	}
+
+	_, err := Open(filepath.Join(t.TempDir(), "state.db"), 1000, time.Minute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storage: init buckets")
 }

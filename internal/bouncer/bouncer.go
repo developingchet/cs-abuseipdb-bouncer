@@ -37,6 +37,13 @@ type Bouncer struct {
 
 var closeShutdownTimeout = 5 * time.Second
 
+const (
+	metricsReadTimeout      = 5 * time.Second
+	metricsWriteTimeout     = 10 * time.Second
+	metricsIdleTimeout      = 30 * time.Second
+	retryDequeueBatchSize   = 50
+)
+
 // New creates a Bouncer and initialises all dependencies.
 func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 	dbPath := filepath.Join(cfg.DataDir, "state.db")
@@ -86,9 +93,9 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 		b.httpSrv = &http.Server{
 			Addr:         cfg.MetricsAddr,
 			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  30 * time.Second,
+			ReadTimeout:  metricsReadTimeout,
+			WriteTimeout: metricsWriteTimeout,
+			IdleTimeout:  metricsIdleTimeout,
 		}
 	}
 
@@ -98,6 +105,13 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 // buildPreQueueFilters constructs the stateless pre-queue filter pipeline
 // (filters 1–7). Quota and cooldown checks are omitted here because they are
 // handled atomically inside the worker pool.
+//
+// Pipeline ordering rationale: stateless/cheap filters (action, scenario,
+// origin, scope, value, private-ip, whitelist, min-duration) run first so
+// that the majority of decisions are rejected before any storage I/O occurs.
+// Quota and cooldown are intentionally last in buildFilters because they
+// involve storage reads and must only be charged for decisions that have
+// already passed all stateless gates.
 func buildPreQueueFilters(cfg *config.Config) []decision.Filter {
 	filters := []decision.Filter{
 		decision.ActionFilter("add"),
@@ -420,7 +434,7 @@ func (b *Bouncer) flushRetryQueue(ctx context.Context) {
 	if err != nil || count == 0 {
 		return
 	}
-	entries, err := b.store.RetryDequeue(time.Now(), 50)
+	entries, err := b.store.RetryDequeue(time.Now(), retryDequeueBatchSize)
 	if err != nil {
 		log.Warn().Err(err).Msg("retry worker: dequeue failed")
 		return
@@ -438,7 +452,7 @@ func (b *Bouncer) flushRetryQueue(ctx context.Context) {
 			Value:    e.IP,
 		}
 		if !b.pool.submit(workerJob{d: d, isRetry: true}) {
-			metrics.DecisionsSkipped.WithLabelValues("retry-buffer-full").Inc()
+			metrics.DecisionsSkipped.WithLabelValues("retry_buffer_full").Inc()
 			log.Warn().Str("ip", e.IP).Msg("retry worker: pool buffer full, decision lost")
 		} else {
 			metrics.RetryAttempts.Inc()

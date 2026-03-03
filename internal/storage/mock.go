@@ -185,6 +185,18 @@ func (m *MemStore) RetryCount() (int, error) {
 	return len(m.retries), nil
 }
 
+func (m *MemStore) RetryPrune(olderThan time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	threshold := olderThan.Unix()
+	for k, e := range m.retries {
+		if e.RetryAfter < threshold {
+			delete(m.retries, k)
+		}
+	}
+	return nil
+}
+
 // DBPath returns "" because MemStore is in-memory.
 func (m *MemStore) DBPath() string { return "" }
 

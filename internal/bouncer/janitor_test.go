@@ -123,6 +123,7 @@ func (s *janitorErrorStore) RetryEnqueue(string, string, time.Time) error       
 func (s *janitorErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
 func (s *janitorErrorStore) RetryDelete(string) error                                    { return nil }
 func (s *janitorErrorStore) RetryCount() (int, error)                                    { return 0, nil }
+func (s *janitorErrorStore) RetryPrune(time.Time) error                                  { return errors.New("retry prune failed") }
 func (s *janitorErrorStore) DBPath() string                                              { return "" }
 func (s *janitorErrorStore) Close() error                                                { return nil }
 

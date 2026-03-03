@@ -27,6 +27,9 @@ func runJanitor(ctx context.Context, store storage.Store, interval time.Duration
 			if err := store.CooldownPrune(); err != nil {
 				log.Warn().Err(err).Msg("janitor: cooldown prune failed")
 			}
+			if err := store.RetryPrune(time.Now().Add(-24 * time.Hour)); err != nil {
+				log.Warn().Err(err).Msg("janitor: retry prune failed")
+			}
 			if path := store.DBPath(); path != "" {
 				if info, err := os.Stat(path); err == nil {
 					metrics.BboltDBSizeBytes.Set(float64(info.Size()))
@@ -35,6 +38,7 @@ func runJanitor(ctx context.Context, store storage.Store, interval time.Duration
 			if count, err := store.RetryCount(); err == nil {
 				metrics.RetryQueueSize.Set(float64(count))
 			}
+			metrics.QuotaRemaining.Set(float64(store.QuotaRemaining()))
 		}
 	}
 }

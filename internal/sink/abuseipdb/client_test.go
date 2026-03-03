@@ -458,6 +458,42 @@ func TestSleepWithContext_ZeroDuration(t *testing.T) {
 	require.NoError(t, c.sleepWithContext(context.Background(), 0))
 }
 
+func TestSleepWithContext_CustomSleepFn_Completes(t *testing.T) {
+	c := NewClient(ClientConfig{
+		APIKey:  "test-key",
+		SleepFn: func(time.Duration) {}, // returns immediately
+	})
+	err := c.sleepWithContext(context.Background(), time.Millisecond)
+	require.NoError(t, err)
+}
+
+func TestSleepWithContext_CustomSleepFn_CancelledByContext(t *testing.T) {
+	started := make(chan struct{})
+	c := NewClient(ClientConfig{
+		APIKey: "test-key",
+		SleepFn: func(d time.Duration) {
+			close(started)
+			time.Sleep(d) // real sleep — context cancel must unblock the caller
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.sleepWithContext(ctx, time.Hour)
+	}()
+
+	<-started // ensure sleepFn goroutine has started before cancelling
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("sleepWithContext did not return after context cancel")
+	}
+}
+
 func TestExtractRetryAfter(t *testing.T) {
 	tests := []struct {
 		body     string

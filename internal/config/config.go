@@ -58,6 +58,19 @@ type Config struct {
 	BuildVersion string
 }
 
+// Validation bounds for config fields.
+const (
+	maxDailyLimit           = 50000
+	minPollInterval         = 2 * time.Second
+	minLAPITimeout          = 200 * time.Millisecond
+	minCooldownDuration     = time.Minute
+	maxWorkerCount          = 64
+	maxWorkerBuffer         = 10000
+	minJanitorInterval      = 30 * time.Second
+	minRetryCheckInterval   = 10 * time.Second
+	minUsageMetricsInterval = 10 * time.Minute
+)
+
 // defaults is the lowest-priority layer.
 var defaults = map[string]any{
 	"crowdsec_lapi_url":      "",
@@ -220,16 +233,16 @@ func (c *Config) validate() error {
 	if c.AbuseIPDBAPIKey == "" {
 		errs = append(errs, "ABUSEIPDB_API_KEY is required (get your key at: https://www.abuseipdb.com/account/api)")
 	}
-	if c.DailyLimit < 1 || c.DailyLimit > 50000 {
+	if c.DailyLimit < 1 || c.DailyLimit > maxDailyLimit {
 		errs = append(errs, "ABUSEIPDB_DAILY_LIMIT must be between 1 and 50000")
 	}
-	if c.PollInterval < 2*time.Second {
+	if c.PollInterval < minPollInterval {
 		errs = append(errs, "POLL_INTERVAL must be at least 2s")
 	}
-	if c.LAPITimeout < 200*time.Millisecond {
+	if c.LAPITimeout < minLAPITimeout {
 		errs = append(errs, "LAPI_TIMEOUT must be at least 200ms")
 	}
-	if c.CooldownDuration < 1*time.Minute {
+	if c.CooldownDuration < minCooldownDuration {
 		errs = append(errs, "COOLDOWN_DURATION must be at least 1m")
 	}
 
@@ -241,19 +254,19 @@ func (c *Config) validate() error {
 		errs = append(errs, "DATA_DIR must not contain null bytes")
 	}
 
-	if c.WorkerCount < 1 || c.WorkerCount > 64 {
+	if c.WorkerCount < 1 || c.WorkerCount > maxWorkerCount {
 		errs = append(errs, "WORKER_COUNT must be between 1 and 64")
 	}
-	if c.WorkerBuffer < 1 || c.WorkerBuffer > 10000 {
+	if c.WorkerBuffer < 1 || c.WorkerBuffer > maxWorkerBuffer {
 		errs = append(errs, "WORKER_BUFFER must be between 1 and 10000")
 	}
-	if c.JanitorInterval < 30*time.Second {
+	if c.JanitorInterval < minJanitorInterval {
 		errs = append(errs, "JANITOR_INTERVAL must be at least 30s")
 	}
-	if c.RetryCheckInterval < 10*time.Second {
+	if c.RetryCheckInterval < minRetryCheckInterval {
 		errs = append(errs, "RETRY_CHECK_INTERVAL must be at least 10s")
 	}
-	if c.UsageMetricsInterval < 10*time.Minute {
+	if c.UsageMetricsInterval < minUsageMetricsInterval {
 		errs = append(errs, "USAGE_METRICS_INTERVAL must be at least 10m")
 	}
 	if !hasAPIKey && hasTLSCert && hasTLSKey {

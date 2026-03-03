@@ -57,7 +57,8 @@ func TestReportsSent_Increments(t *testing.T) {
 func TestDecisionsSkipped_IncrementsByFilter(t *testing.T) {
 	filters := []string{
 		"action", "origin", "scope", "value", "private_ip",
-		"min_duration", "quota", "cooldown",
+		"scenario_exclude", "min_duration", "quota", "cooldown",
+		"buffer_full", "retry_enqueue_failed", "retry_buffer_full",
 	}
 	for _, f := range filters {
 		f := f

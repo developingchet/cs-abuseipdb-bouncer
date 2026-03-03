@@ -24,16 +24,18 @@ import (
 // respBufPool reuses response body buffers across concurrent requests to
 // reduce GC pressure from short-lived HTTP responses.
 var respBufPool = sync.Pool{
-	New: func() any { return bytes.NewBuffer(make([]byte, 0, 4096)) },
+	New: func() any { return bytes.NewBuffer(make([]byte, 0, httpResponseBufSize)) },
 }
 
 const (
-	defaultReportURL = "https://api.abuseipdb.com/api/v2/report"
-	defaultCheckURL  = "https://api.abuseipdb.com/api/v2/check"
-	reportTimeout    = 15 * time.Second
-	checkTimeout     = 10 * time.Second
+	defaultReportURL      = "https://api.abuseipdb.com/api/v2/report"
+	defaultCheckURL       = "https://api.abuseipdb.com/api/v2/check"
+	reportTimeout         = 15 * time.Second
+	checkTimeout          = 10 * time.Second
 	defaultMaxRetries     = 3
 	defaultInitialBackoff = 5 * time.Second
+	httpResponseBufSize   = 4096
+	defaultRetryAfterSecs = 60
 )
 
 // ClientConfig holds configuration for the AbuseIPDB client.
@@ -119,7 +121,7 @@ func (c *Client) Report(ctx context.Context, r *sink.Report) error {
 	if c.precheck {
 		whitelisted, err := c.checkWhitelisted(ctx, ip)
 		if err != nil {
-			log.Debug().Err(err).Str("ip", ip).Msg("precheck error, proceeding with report")
+			log.Warn().Err(err).Str("ip", ip).Msg("precheck error, proceeding with report")
 		} else if whitelisted {
 			log.Info().Str("ip", ip).Msg("skip whitelisted")
 			return nil
@@ -244,7 +246,7 @@ func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (
 	buf := respBufPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer respBufPool.Put(buf)
-	_, _ = io.Copy(buf, io.LimitReader(resp.Body, 4096))
+	_, _ = io.Copy(buf, io.LimitReader(resp.Body, httpResponseBufSize))
 	body := make([]byte, buf.Len())
 	copy(body, buf.Bytes())
 	return resp.StatusCode, body, nil
@@ -272,7 +274,7 @@ func (c *Client) checkWhitelisted(ctx context.Context, ip string) (bool, error) 
 	buf := respBufPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer respBufPool.Put(buf)
-	_, _ = io.Copy(buf, io.LimitReader(resp.Body, 4096))
+	_, _ = io.Copy(buf, io.LimitReader(resp.Body, httpResponseBufSize))
 	body := make([]byte, buf.Len())
 	copy(body, buf.Bytes())
 
@@ -380,7 +382,7 @@ func extractRetryAfter(body []byte) int {
 			return n
 		}
 	}
-	return 60
+	return defaultRetryAfterSecs
 }
 
 func extractErrorDetail(body []byte) string {

@@ -166,6 +166,6 @@ func TestPipeline(t *testing.T) {
 		}
 		reason := Pipeline(filters, d)
 		assert.NotNil(t, reason)
-		assert.Equal(t, "private-ip", reason.Filter)
+		assert.Equal(t, "private_ip", reason.Filter)
 	})
 }

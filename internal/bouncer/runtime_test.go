@@ -490,6 +490,14 @@ func TestClose_LogsWarningBranches(t *testing.T) {
 	assert.NotPanics(t, func() { b.Close() })
 }
 
+func TestClose_CooldownPruneError_DoesNotPanic(t *testing.T) {
+	// errorStore returns an error for CooldownPrune — verify Close() handles it.
+	b := &Bouncer{
+		store: &errorStore{},
+	}
+	assert.NotPanics(t, func() { b.Close() })
+}
+
 func TestClose_ShutdownTimeoutWarningBranch(t *testing.T) {
 	origTimeout := closeShutdownTimeout
 	closeShutdownTimeout = 20 * time.Millisecond
@@ -541,6 +549,7 @@ func (s *errorStore) RetryEnqueue(string, string, time.Time) error              
 func (s *errorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
 func (s *errorStore) RetryDelete(string) error                                    { return nil }
 func (s *errorStore) RetryCount() (int, error)                                    { return 0, nil }
+func (s *errorStore) RetryPrune(time.Time) error                                  { return nil }
 func (s *errorStore) DBPath() string                                              { return "" }
 func (s *errorStore) Close() error                                                { return errors.New("close failed") }
 
@@ -578,5 +587,6 @@ func (s *recordErrorStore) RetryEnqueue(string, string, time.Time) error        
 func (s *recordErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
 func (s *recordErrorStore) RetryDelete(string) error                                    { return nil }
 func (s *recordErrorStore) RetryCount() (int, error)                                    { return 0, nil }
+func (s *recordErrorStore) RetryPrune(time.Time) error                                  { return nil }
 func (s *recordErrorStore) DBPath() string                                              { return "" }
 func (s *recordErrorStore) Close() error                                                { return nil }

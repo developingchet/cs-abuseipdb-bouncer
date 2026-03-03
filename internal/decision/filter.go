@@ -57,7 +57,7 @@ func ScenarioExclude(patterns ...string) Filter {
 		lower := strings.ToLower(d.Scenario)
 		for _, p := range patterns {
 			if strings.Contains(lower, p) {
-				return &SkipReason{"scenario-exclude", fmt.Sprintf("scenario=%s matches exclude pattern %q", d.Scenario, p)}
+				return &SkipReason{"scenario_exclude", fmt.Sprintf("scenario=%s matches exclude pattern %q", d.Scenario, p)}
 			}
 		}
 		return nil
@@ -106,7 +106,7 @@ func ValueRequired() Filter {
 func PrivateIPReject() Filter {
 	return func(d *Decision) *SkipReason {
 		if IsPrivate(d.Value) {
-			return &SkipReason{"private-ip", fmt.Sprintf("ip=%s is private/reserved", d.Value)}
+			return &SkipReason{"private_ip", fmt.Sprintf("ip=%s is private/reserved", d.Value)}
 		}
 		return nil
 	}
@@ -121,7 +121,7 @@ func MinDurationFilter(minimum time.Duration) Filter {
 		}
 		dur := ParseGoDuration(d.Duration)
 		if dur < minimum {
-			return &SkipReason{"min-duration", fmt.Sprintf("duration=%s (%v) below minimum %v", d.Duration, dur, minimum)}
+			return &SkipReason{"min_duration", fmt.Sprintf("duration=%s (%v) below minimum %v", d.Duration, dur, minimum)}
 		}
 		return nil
 	}

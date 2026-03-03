@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -254,6 +255,56 @@ func TestMemStore_Retry_Count(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("expected count=2, got %d", count)
+	}
+}
+
+func TestMemStore_RetryPrune(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+
+	// Enqueue a very old entry (to be pruned).
+	veryOld := time.Now().Add(-25 * time.Hour)
+	if err := m.RetryEnqueue("10.0.0.1", "s1", veryOld); err != nil {
+		t.Fatalf("RetryEnqueue old: %v", err)
+	}
+
+	// Enqueue a recent entry (not pruned).
+	recent := time.Now().Add(-time.Hour)
+	if err := m.RetryEnqueue("10.0.0.2", "s2", recent); err != nil {
+		t.Fatalf("RetryEnqueue recent: %v", err)
+	}
+
+	if err := m.RetryPrune(time.Now().Add(-24 * time.Hour)); err != nil {
+		t.Fatalf("RetryPrune: %v", err)
+	}
+
+	count, err := m.RetryCount()
+	if err != nil {
+		t.Fatalf("RetryCount: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 entry after prune, got %d", count)
+	}
+}
+
+func TestMemStore_RetryDequeue_LimitExceeded(t *testing.T) {
+	m := NewMemStore(1000, time.Minute)
+	past := time.Now().Add(-time.Second)
+
+	// Enqueue 5 distinct past-due entries.
+	for i := 1; i <= 5; i++ {
+		ip := fmt.Sprintf("10.0.0.%d", i)
+		if err := m.RetryEnqueue(ip, "s", past); err != nil {
+			t.Fatalf("RetryEnqueue %s: %v", ip, err)
+		}
+	}
+
+	// Request only 2 — limit must be honoured.
+	records, err := m.RetryDequeue(time.Now(), 2)
+	if err != nil {
+		t.Fatalf("RetryDequeue: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records (limit), got %d", len(records))
 	}
 }
 
