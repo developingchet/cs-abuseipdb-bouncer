@@ -243,7 +243,10 @@ func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (
 	}
 	defer resp.Body.Close()
 
-	buf := respBufPool.Get().(*bytes.Buffer)
+	buf, _ := respBufPool.Get().(*bytes.Buffer)
+	if buf == nil {
+		buf = bytes.NewBuffer(make([]byte, 0, httpResponseBufSize))
+	}
 	buf.Reset()
 	defer respBufPool.Put(buf)
 	_, _ = io.Copy(buf, io.LimitReader(resp.Body, httpResponseBufSize))
@@ -271,7 +274,10 @@ func (c *Client) checkWhitelisted(ctx context.Context, ip string) (bool, error) 
 	}
 	defer resp.Body.Close()
 
-	buf := respBufPool.Get().(*bytes.Buffer)
+	buf, _ := respBufPool.Get().(*bytes.Buffer)
+	if buf == nil {
+		buf = bytes.NewBuffer(make([]byte, 0, httpResponseBufSize))
+	}
 	buf.Reset()
 	defer respBufPool.Put(buf)
 	_, _ = io.Copy(buf, io.LimitReader(resp.Body, httpResponseBufSize))
