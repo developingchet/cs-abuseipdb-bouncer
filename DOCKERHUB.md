@@ -79,13 +79,17 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `ABUSEIPDB_MIN_DURATION` | `0` | Skip decisions shorter than N seconds (e.g. `300` ignores 5-minute test bans). |
 | `IP_WHITELIST` | _(none)_ | Comma-separated IPs/CIDRs to skip reporting (e.g. `203.0.113.0/24,2001:db8::/32`). |
 | `COOLDOWN_DURATION` | `15m` | Per-IP cooldown matching AbuseIPDB's deduplication window. |
-| `POLL_INTERVAL` | `30s` | LAPI decision stream polling frequency. |
+| `POLL_INTERVAL` | `2s` | LAPI decision stream polling frequency (minimum: 2s). |
+| `LAPI_TIMEOUT` | `10s` | HTTP timeout for LAPI requests (minimum: 200ms). |
 | `LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | `json` | `json` (structured, for SIEM) or `text` (human-readable). |
 | `TLS_SKIP_VERIFY` | `false` | Skip TLS verification — only for self-signed LAPI certificates. |
 | `WORKER_COUNT` | `4` | Number of goroutines that concurrently send reports to AbuseIPDB (range: 1–64). |
 | `WORKER_BUFFER` | `256` | Size of the in-memory job queue between the event loop and workers (range: 1–10000). |
 | `JANITOR_INTERVAL` | `5m` | How often the background janitor prunes expired cooldown entries and updates the DB size metric (minimum: 30s). |
+| `RETRY_CHECK_INTERVAL` | `30s` | How often to check the retry queue for rate-limited decisions ready to resend (minimum: 10s). |
+| `USAGE_METRICS_ENABLED` | `true` | Enable/disable periodic LAPI telemetry push (`POST /v1/usage-metrics`). |
+| `USAGE_METRICS_INTERVAL` | `30m` | Interval for LAPI telemetry push (minimum: 10m). |
 
 ---
 
@@ -180,7 +184,7 @@ A CycloneDX SBOM is available as a GitHub Release asset and embedded as a Cosign
 | Default path | `/tmp/cs-abuseipdb` | `/data` |
 | Storage format | `daily` file + `cooldown/` directory | `state.db` (bbolt embedded database) |
 | Volume mount | `bouncer-state:/tmp/cs-abuseipdb` | `bouncer-state:/data` |
-| New in v2.0 | — | `METRICS_ADDR`, `CONFIG_FILE` |
+| New in v2.0 | — | `METRICS_ENABLED`, `METRICS_ADDR`, `CONFIG_FILE`, `WORKER_COUNT`, `WORKER_BUFFER`, `JANITOR_INTERVAL`, `RETRY_CHECK_INTERVAL`, `USAGE_METRICS_ENABLED`, `USAGE_METRICS_INTERVAL`, `LAPI_TIMEOUT`, `IP_WHITELIST` |
 
 **No migration script is needed.** On first start, v2.0 creates a fresh `state.db`. The quota counter resets at UTC midnight anyway, and cooldowns rebuild within one 15-minute window.
 

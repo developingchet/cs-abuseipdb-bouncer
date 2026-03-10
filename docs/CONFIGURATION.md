@@ -11,7 +11,9 @@ Complete reference for all configuration options in the CrowdSec AbuseIPDB Bounc
   - [Optional — Storage & Metrics](#optional--storage--metrics)
     - [Usage Metrics Telemetry](#usage-metrics-telemetry)
   - [Optional — Networking & Logging](#optional--networking--logging)
+    - [LAPI_TIMEOUT](#lapi_timeout)
   - [Optional — Concurrency](#optional--concurrency)
+    - [RETRY_CHECK_INTERVAL](#retry_check_interval)
 - [Scenario Category Mapping](#scenario-category-mapping)
 - [Advanced Configuration](#advanced-configuration)
 
@@ -255,10 +257,10 @@ Expired entries are pruned from `state.db` by the background janitor (see `JANIT
 #### POLL_INTERVAL
 
 **Type:** Duration string
-**Default:** `10s`
-**Minimum:** `10s`
+**Default:** `2s`
+**Minimum:** `2s`
 
-How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 10 s are rejected at startup.
+How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 2 s are rejected at startup.
 
 #### LOG_LEVEL
 
@@ -305,6 +307,16 @@ When `true`, the bouncer skips TLS certificate verification when connecting to t
 
 Do not enable this in production unless your LAPI is on a trusted private network. Enabling it removes protection against man-in-the-middle attacks on the LAPI connection.
 
+#### LAPI_TIMEOUT
+
+**Type:** Duration string
+**Default:** `10s`
+**Minimum:** `200ms`
+
+HTTP client timeout for all LAPI requests (both the decision stream poll and the usage-metrics push). Values below 200 ms are rejected at startup.
+
+The default of 10 s is appropriate for all deployments. Increase this value only if your LAPI is on a high-latency remote connection.
+
 ---
 
 ### Optional — Concurrency
@@ -343,6 +355,16 @@ How often the background janitor goroutine runs. On each tick the janitor:
 2. Updates the `cs_abuseipdb_bbolt_db_size_bytes` Prometheus gauge with the current file size
 
 Values below 30 s are rejected at startup. The default of 5 minutes is appropriate for all deployments.
+
+#### RETRY_CHECK_INTERVAL
+
+**Type:** Duration string
+**Default:** `30s`
+**Minimum:** `10s`
+
+How often the background retry worker checks the retry queue for rate-limited decisions that are ready to be retried. When AbuseIPDB returns HTTP 429 (rate limited), the decision is persisted to `state.db` and retried after the interval indicated by the `Retry-After` response header.
+
+Values below 10 s are rejected at startup. The default of 30 s is appropriate for all deployments.
 
 ---
 

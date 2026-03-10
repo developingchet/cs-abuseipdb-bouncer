@@ -56,7 +56,7 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │       CrowdSec LAPI          │
 │       (port 8080 / 8443)     │
 └──────────────┬───────────────┘
-               │ polls every 10s
+               │ polls every 2s
                │ GET /v1/decisions/stream
                │
                v
@@ -245,7 +245,7 @@ ABUSEIPDB_DAILY_LIMIT=1000    # Free=1000, Webmaster=3000, Premium=50000
 ABUSEIPDB_PRECHECK=false      # Pre-check /check endpoint before reporting
 ABUSEIPDB_MIN_DURATION=0      # Skip decisions shorter than N seconds
 COOLDOWN_DURATION=15m         # Per-IP cooldown window
-POLL_INTERVAL=10s             # LAPI polling frequency
+POLL_INTERVAL=2s              # LAPI polling frequency (min 2s)
 LOG_LEVEL=info                # trace, debug, info, warn, error
 LOG_FORMAT=json               # json or text
 TLS_SKIP_VERIFY=false         # Skip TLS verification (self-signed certs)
@@ -259,6 +259,8 @@ CONFIG_FILE=                  # Optional path to YAML config file
 WORKER_COUNT=4                # Goroutines sending reports concurrently (1–64)
 WORKER_BUFFER=256             # In-memory job queue size (1–10000)
 JANITOR_INTERVAL=5m           # How often to prune state.db and update DB size metric (min 30s)
+RETRY_CHECK_INTERVAL=30s      # How often to retry rate-limited decisions (min 10s)
+LAPI_TIMEOUT=10s              # HTTP timeout for LAPI requests (min 200ms)
 ```
 
 See [CONFIGURATION.md](docs/CONFIGURATION.md) for complete details.
@@ -390,7 +392,7 @@ go test -race ./... -count=1 -timeout=120s
 | Default path | `/tmp/cs-abuseipdb` | `/data` |
 | Storage format | `daily` file + `cooldown/` directory | `state.db` (bbolt embedded database) |
 | Volume mount | `bouncer-state:/tmp/cs-abuseipdb` | `bouncer-state:/data` |
-| New in v2.0 | — | `METRICS_ADDR`, `CONFIG_FILE`, `WORKER_COUNT`, `WORKER_BUFFER`, `JANITOR_INTERVAL` |
+| New in v2.0 | — | `METRICS_ENABLED`, `METRICS_ADDR`, `CONFIG_FILE`, `WORKER_COUNT`, `WORKER_BUFFER`, `JANITOR_INTERVAL`, `RETRY_CHECK_INTERVAL`, `USAGE_METRICS_ENABLED`, `USAGE_METRICS_INTERVAL`, `LAPI_TIMEOUT`, `IP_WHITELIST` |
 | Supply-chain | — | Cosign keyless signing + CycloneDX SBOM |
 | Runtime hardening | — | Seccomp syscall allowlist + log key redaction |
 
