@@ -1,6 +1,6 @@
 module github.com/developingchet/cs-abuseipdb-bouncer
 
-go 1.25.0
+go 1.24.0
 
 require (
 	github.com/crowdsecurity/go-cs-bouncer v0.0.10
@@ -61,7 +61,7 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.mongodb.org/mongo-driver v1.11.6 // indirect
 	go.yaml.in/yaml/v3 v3.0.3 // indirect
-	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
