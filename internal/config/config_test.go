@@ -439,6 +439,28 @@ func TestLoad_DataDir_NullByteRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "null bytes")
 }
 
+func TestValidate_NegativeMinDurationRejected(t *testing.T) {
+	cfg := &Config{
+		LAPIURL:              "http://crowdsec:8080",
+		LAPIKey:              "x",
+		AbuseIPDBAPIKey:      "y",
+		DailyLimit:           1000,
+		MinDuration:          -time.Minute,
+		PollInterval:         10 * time.Second,
+		LAPITimeout:          10 * time.Second,
+		CooldownDuration:     time.Minute,
+		DataDir:              "/data",
+		WorkerCount:          4,
+		WorkerBuffer:         256,
+		JanitorInterval:      time.Minute,
+		RetryCheckInterval:   30 * time.Second,
+		UsageMetricsInterval: 30 * time.Minute,
+	}
+	err := cfg.validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ABUSEIPDB_MIN_DURATION must not be negative")
+}
+
 func TestLoad_DataDir_ValidPathAccepted(t *testing.T) {
 	env := validEnv()
 	env["DATA_DIR"] = "/data" // baseline — must still pass
@@ -626,7 +648,7 @@ func TestLoad_FileSecret(t *testing.T) {
 		assert.Equal(t, "direct-key-value", cfg.LAPIKey)
 	})
 
-	t.Run("nonexistent _FILE path fails with required error", func(t *testing.T) {
+	t.Run("nonexistent _FILE path fails naming the file", func(t *testing.T) {
 		env := validEnv()
 		delete(env, "CROWDSEC_LAPI_KEY")
 		setEnv(t, env)
@@ -635,7 +657,20 @@ func TestLoad_FileSecret(t *testing.T) {
 
 		_, err := Load()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "either CROWDSEC_LAPI_KEY")
+		assert.Contains(t, err.Error(), "CROWDSEC_LAPI_KEY_FILE")
+		assert.Contains(t, err.Error(), "could not be read")
+	})
+
+	t.Run("unreadable ABUSEIPDB_API_KEY_FILE fails naming the file", func(t *testing.T) {
+		env := validEnv()
+		delete(env, "ABUSEIPDB_API_KEY")
+		setEnv(t, env)
+		os.Unsetenv("ABUSEIPDB_API_KEY")
+		t.Setenv("ABUSEIPDB_API_KEY_FILE", filepath.Join(t.TempDir(), "missing"))
+
+		_, err := Load()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ABUSEIPDB_API_KEY_FILE")
 	})
 
 	t.Run("file with surrounding whitespace is trimmed", func(t *testing.T) {
@@ -681,14 +716,18 @@ usage_metrics_interval: 31m
 	assert.Equal(t, 31*time.Minute, cfg.UsageMetricsInterval, "file value should be used when env override absent")
 }
 
-func TestLoad_MinDuration_InvalidStringFallsBackToDefault(t *testing.T) {
-	env := validEnv()
-	env["ABUSEIPDB_MIN_DURATION"] = "not-a-duration"
-	setEnv(t, env)
+func TestLoad_MinDuration_Invalid(t *testing.T) {
+	for _, raw := range []string{"not-a-duration", "300abc", "-5m", "-300"} {
+		t.Run(raw, func(t *testing.T) {
+			env := validEnv()
+			env["ABUSEIPDB_MIN_DURATION"] = raw
+			setEnv(t, env)
 
-	cfg, err := Load()
-	require.NoError(t, err)
-	assert.Equal(t, time.Duration(0), cfg.MinDuration)
+			_, err := Load()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "ABUSEIPDB_MIN_DURATION")
+		})
+	}
 }
 
 func TestLoad_MTLSPathValidation(t *testing.T) {

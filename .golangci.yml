@@ -1,18 +1,27 @@
+version: "2"
 linters:
-  enable:
-    - govet
-    - staticcheck
-    - errcheck
-    - gosimple
-    - unused
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-
-issues:
-  exclude-rules:
-    # Test files may use blank identifiers for error returns intentionally.
-    - path: _test\.go
-      linters:
-        - errcheck
+  settings:
+    errcheck:
+      check-type-assertions: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

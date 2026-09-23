@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,8 +38,7 @@ func (s *recordingSink) Report(_ context.Context, _ *sink.Report) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *recordingSink) Healthy(_ context.Context) error { return nil }
-func (s *recordingSink) Close() error                    { return nil }
+func (s *recordingSink) Close() error { return nil }
 func (s *recordingSink) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,29 +99,144 @@ func TestNew_MetricsHandlers(t *testing.T) {
 	cfg := baseRunConfig(t, "http://127.0.0.1:18080")
 	cfg.MetricsAddr = "127.0.0.1:9090"
 
-	okBouncer, err := New(cfg, []sink.Sink{&recordingSink{}})
+	b, err := New(cfg, []sink.Sink{&recordingSink{}})
 	require.NoError(t, err)
-	defer okBouncer.Close()
+	defer b.Close()
 
-	healthRec := httptest.NewRecorder()
-	healthReq := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	okBouncer.httpSrv.Handler.ServeHTTP(healthRec, healthReq)
-	assert.Equal(t, http.StatusOK, healthRec.Code)
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		b.httpSrv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
 
-	readyRec := httptest.NewRecorder()
-	readyReq := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	okBouncer.httpSrv.Handler.ServeHTTP(readyRec, readyReq)
-	assert.Equal(t, http.StatusOK, readyRec.Code)
+	// Startup grace: live, but not ready until the first LAPI pull.
+	assert.Equal(t, http.StatusOK, get("/healthz").Code)
+	notReady := get("/readyz")
+	assert.Equal(t, http.StatusServiceUnavailable, notReady.Code)
+	assert.Contains(t, notReady.Body.String(), "waiting for first LAPI pull")
 
-	badCfg := baseRunConfig(t, "http://127.0.0.1:18080")
-	badCfg.MetricsAddr = "127.0.0.1:9090"
-	badBouncer, err := New(badCfg, []sink.Sink{&healthErrSink{err: errors.New("upstream down")}})
+	b.health.recordLAPIPull()
+	assert.Equal(t, http.StatusOK, get("/readyz").Code)
+
+	for i := 0; i < maxConsecutiveSinkFailures; i++ {
+		b.health.recordSinkFailure()
+	}
+	unhealthy := get("/healthz")
+	assert.Equal(t, http.StatusServiceUnavailable, unhealthy.Code)
+	assert.Equal(t, "application/json", unhealthy.Header().Get("Content-Type"))
+	var body healthReport
+	require.NoError(t, json.Unmarshal(unhealthy.Body.Bytes(), &body))
+	assert.Equal(t, "unhealthy", body.Status)
+	assert.EqualValues(t, maxConsecutiveSinkFailures, body.ConsecutiveAbuseIPDBFailures)
+}
+
+func TestRun_RecordsLAPIPullForHealth(t *testing.T) {
+	lapi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"deleted":null,"new":null}`)
+	}))
+	defer lapi.Close()
+
+	b, err := New(baseRunConfig(t, lapi.URL), []sink.Sink{&recordingSink{}})
 	require.NoError(t, err)
-	defer badBouncer.Close()
-	badReadyRec := httptest.NewRecorder()
-	badReadyReq := httptest.NewRequest(http.MethodGet, "/readyz", nil)
-	badBouncer.httpSrv.Handler.ServeHTTP(badReadyRec, badReadyReq)
-	assert.Equal(t, http.StatusServiceUnavailable, badReadyRec.Code)
+	defer b.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.Run(ctx) }()
+
+	require.Eventually(t, func() bool {
+		_, err := b.health.ready()
+		return err == nil
+	}, 3*time.Second, 20*time.Millisecond)
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// Regression: the retry worker flushes immediately on startup, so the pool
+// must exist before it starts (it used to be created afterwards).
+func TestRun_DueRetriesAtStartupAreDelivered(t *testing.T) {
+	lapi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"deleted":null,"new":null}`)
+	}))
+	defer lapi.Close()
+
+	rs := &recordingSink{}
+	b, err := New(baseRunConfig(t, lapi.URL), []sink.Sink{rs})
+	require.NoError(t, err)
+	defer b.Close()
+	require.NoError(t, b.store.RetryEnqueue("203.0.113.77", "crowdsecurity/ssh-bf", time.Now().Add(-time.Minute), 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- b.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return rs.Count() == 1 }, 3*time.Second, 20*time.Millisecond)
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestConsumeStream_StreamClosedReturnsCause(t *testing.T) {
+	b := &Bouncer{stream: &csbouncer.StreamBouncer{Stream: make(chan *models.DecisionsStreamResponse)}}
+	streamErr := make(chan error, 1)
+	close(b.stream.Stream)
+	// Deliver the cause only after consumeStream has observed the closed
+	// channel, mirroring go-cs-bouncer (close first, then return the error).
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		streamErr <- errors.New("401 unauthorized")
+	}()
+
+	err := b.consumeStream(context.Background(), streamErr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lapi stream closed")
+	assert.Contains(t, err.Error(), "401 unauthorized")
+}
+
+func TestHandleStreamBatch_BufferFullDropsDecision(t *testing.T) {
+	b := &Bouncer{
+		cfg:        &config.Config{},
+		preFilters: buildPreQueueFilters(&config.Config{}),
+		pool:       &workerPool{jobCh: make(chan workerJob)}, // no buffer, no workers
+	}
+	ip, origin, scenario, scope, dur := "203.0.113.5", "crowdsec", "crowdsecurity/ssh-bf", "ip", "1h"
+	assert.NotPanics(t, func() {
+		b.handleStreamBatch(&models.DecisionsStreamResponse{New: models.GetDecisionsResponse{
+			{Value: &ip, Origin: &origin, Scenario: &scenario, Scope: &scope, Duration: &dur},
+		}})
+	})
+}
+
+// failingWriter is a ResponseWriter whose body writes fail.
+type failingWriter struct{ *httptest.ResponseRecorder }
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("client went away") }
+
+func TestHealthHandler_WriteErrorIsTolerated(t *testing.T) {
+	h := healthHandler(func() (healthReport, error) { return healthReport{Status: "ok"}, nil })
+	w := failingWriter{httptest.NewRecorder()}
+	assert.NotPanics(t, func() { h(w, httptest.NewRequest(http.MethodGet, "/healthz", nil)) })
+}
+
+func TestConsumeStream_RunReturnedErrorIsPropagated(t *testing.T) {
+	b := &Bouncer{stream: &csbouncer.StreamBouncer{Stream: make(chan *models.DecisionsStreamResponse)}}
+	streamErr := make(chan error, 1)
+	streamErr <- errors.New("boom")
+
+	err := b.consumeStream(context.Background(), streamErr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lapi stream stopped: boom")
+}
+
+func TestConsumeStream_ContextErrorFromRunIsNil(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		b := &Bouncer{stream: &csbouncer.StreamBouncer{Stream: make(chan *models.DecisionsStreamResponse)}}
+		streamErr := make(chan error, 1)
+		streamErr <- cause
+
+		assert.NoError(t, b.consumeStream(context.Background(), streamErr), cause.Error())
+	}
 }
 
 func TestRun_HappyPathReportsDecision(t *testing.T) {
@@ -398,6 +513,8 @@ func TestRun_LAPITimeout200ms_NoCrash(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
+	// The initial connect times out; RetryInitialConnect keeps the bouncer
+	// alive (not exiting) until the context ends.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	start := time.Now()
@@ -405,8 +522,11 @@ func TestRun_LAPITimeout200ms_NoCrash(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
-	assert.Less(t, elapsed, time.Second)
+	assert.GreaterOrEqual(t, elapsed, time.Second)
+	assert.Less(t, elapsed, 3*time.Second, "Run must return promptly once the context ends")
 	assert.Equal(t, 200*time.Millisecond, b.stream.APIClient.GetClient().Timeout)
+	_, readyErr := b.health.ready()
+	assert.Error(t, readyErr, "no LAPI pull succeeded, so the bouncer must not report ready")
 }
 
 func TestRun_InvalidMTLSCertFailsGracefully(t *testing.T) {
@@ -535,58 +655,52 @@ func TestLAPIUserAgent(t *testing.T) {
 
 type errorStore struct{}
 
-func (s *errorStore) QuotaAllow() bool                     { return true }
-func (s *errorStore) QuotaCount() int                      { return 0 }
-func (s *errorStore) QuotaLimit() int                      { return 1 }
-func (s *errorStore) QuotaRemaining() int                  { return 1 }
-func (s *errorStore) QuotaRecord() error                   { return nil }
-func (s *errorStore) QuotaConsume() (bool, error)          { return true, nil }
-func (s *errorStore) CooldownAllow(string) bool            { return true }
-func (s *errorStore) CooldownRecord(string) error          { return nil }
-func (s *errorStore) CooldownPrune() error                 { return errors.New("prune failed") }
-func (s *errorStore) CooldownConsume(string) (bool, error)                        { return true, nil }
-func (s *errorStore) RetryEnqueue(string, string, time.Time) error                { return nil }
-func (s *errorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
-func (s *errorStore) RetryDelete(string) error                                    { return nil }
-func (s *errorStore) RetryCount() (int, error)                                    { return 0, nil }
-func (s *errorStore) RetryPrune(time.Time) error                                  { return nil }
-func (s *errorStore) DBPath() string                                              { return "" }
-func (s *errorStore) Close() error                                                { return errors.New("close failed") }
+func (s *errorStore) QuotaAllow() bool                                           { return true }
+func (s *errorStore) QuotaCount() int                                            { return 0 }
+func (s *errorStore) QuotaLimit() int                                            { return 1 }
+func (s *errorStore) QuotaRemaining() int                                        { return 1 }
+func (s *errorStore) QuotaRecord() error                                         { return nil }
+func (s *errorStore) QuotaConsume() (bool, error)                                { return true, nil }
+func (s *errorStore) CooldownAllow(string) bool                                  { return true }
+func (s *errorStore) CooldownRecord(string) error                                { return nil }
+func (s *errorStore) CooldownPrune() error                                       { return errors.New("prune failed") }
+func (s *errorStore) CooldownConsume(string) (bool, error)                       { return true, nil }
+func (s *errorStore) RetryEnqueue(string, string, time.Time, int) error          { return nil }
+func (s *errorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error) { return nil, nil }
+func (s *errorStore) RetryDelete(string) error                                   { return nil }
+func (s *errorStore) RetryCount() (int, error)                                   { return 0, nil }
+func (s *errorStore) RetryPrune(time.Time) error                                 { return nil }
+func (s *errorStore) DBPath() string                                             { return "" }
+func (s *errorStore) Close() error                                               { return errors.New("close failed") }
 
 type closeErrSink struct{}
 
 func (s *closeErrSink) Name() string                               { return "close-error-sink" }
 func (s *closeErrSink) Report(context.Context, *sink.Report) error { return nil }
-func (s *closeErrSink) Healthy(context.Context) error              { return nil }
 func (s *closeErrSink) Close() error                               { return errors.New("sink close failed") }
 
 func osWriteFile(path string, b []byte) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-type healthErrSink struct{ err error }
-
-func (s *healthErrSink) Name() string                               { return "health-err" }
-func (s *healthErrSink) Report(context.Context, *sink.Report) error { return nil }
-func (s *healthErrSink) Healthy(context.Context) error              { return s.err }
-func (s *healthErrSink) Close() error                               { return nil }
-
 type recordErrorStore struct{}
 
-func (s *recordErrorStore) QuotaAllow() bool                     { return true }
-func (s *recordErrorStore) QuotaCount() int                      { return 0 }
-func (s *recordErrorStore) QuotaLimit() int                      { return 1000 }
-func (s *recordErrorStore) QuotaRemaining() int                  { return 999 }
-func (s *recordErrorStore) QuotaRecord() error                   { return errors.New("quota record failed") }
-func (s *recordErrorStore) QuotaConsume() (bool, error)          { return true, nil }
-func (s *recordErrorStore) CooldownAllow(string) bool            { return true }
-func (s *recordErrorStore) CooldownRecord(string) error          { return errors.New("cooldown record failed") }
-func (s *recordErrorStore) CooldownPrune() error                 { return nil }
-func (s *recordErrorStore) CooldownConsume(string) (bool, error)                        { return true, nil }
-func (s *recordErrorStore) RetryEnqueue(string, string, time.Time) error                { return nil }
-func (s *recordErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error)  { return nil, nil }
-func (s *recordErrorStore) RetryDelete(string) error                                    { return nil }
-func (s *recordErrorStore) RetryCount() (int, error)                                    { return 0, nil }
-func (s *recordErrorStore) RetryPrune(time.Time) error                                  { return nil }
-func (s *recordErrorStore) DBPath() string                                              { return "" }
-func (s *recordErrorStore) Close() error                                                { return nil }
+func (s *recordErrorStore) QuotaAllow() bool                                  { return true }
+func (s *recordErrorStore) QuotaCount() int                                   { return 0 }
+func (s *recordErrorStore) QuotaLimit() int                                   { return 1000 }
+func (s *recordErrorStore) QuotaRemaining() int                               { return 999 }
+func (s *recordErrorStore) QuotaRecord() error                                { return errors.New("quota record failed") }
+func (s *recordErrorStore) QuotaConsume() (bool, error)                       { return true, nil }
+func (s *recordErrorStore) CooldownAllow(string) bool                         { return true }
+func (s *recordErrorStore) CooldownRecord(string) error                       { return errors.New("cooldown record failed") }
+func (s *recordErrorStore) CooldownPrune() error                              { return nil }
+func (s *recordErrorStore) CooldownConsume(string) (bool, error)              { return true, nil }
+func (s *recordErrorStore) RetryEnqueue(string, string, time.Time, int) error { return nil }
+func (s *recordErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error) {
+	return nil, nil
+}
+func (s *recordErrorStore) RetryDelete(string) error   { return nil }
+func (s *recordErrorStore) RetryCount() (int, error)   { return 0, nil }
+func (s *recordErrorStore) RetryPrune(time.Time) error { return nil }
+func (s *recordErrorStore) DBPath() string             { return "" }
+func (s *recordErrorStore) Close() error               { return nil }

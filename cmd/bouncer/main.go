@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/bouncer"
@@ -30,13 +27,12 @@ var (
 
 type runtimeBouncer interface {
 	Run(ctx context.Context) error
-	Healthy(ctx context.Context) error
 	Close()
 }
 
 var (
-	loadConfig = config.Load
-	registerMetrics = metrics.Register
+	loadConfig       = config.Load
+	registerMetrics  = metrics.Register
 	newSignalContext = func(parent context.Context) (context.Context, context.CancelFunc) {
 		return signal.NotifyContext(parent, syscall.SIGTERM, syscall.SIGINT)
 	}
@@ -73,7 +69,7 @@ and reports malicious IPs to AbuseIPDB in real-time.`,
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "healthcheck",
-		Short: "Check LAPI and AbuseIPDB connectivity (for Docker HEALTHCHECK)",
+		Short: "Query the running bouncer's /healthz endpoint (for Docker HEALTHCHECK)",
 		RunE:  runHealthcheck,
 	})
 
@@ -113,26 +109,6 @@ func runBouncer(cmd *cobra.Command, args []string) error {
 	return b.Run(ctx)
 }
 
-func runHealthcheck(cmd *cobra.Command, args []string) error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("configuration error: %w", err)
-	}
-	cfg.BuildVersion = version
-
-	initLogging("error", cfg.LogFormat)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	sinks := buildSinks(cfg)
-	b, err := newRuntime(cfg, sinks)
-	if err != nil {
-		return err
-	}
-	defer b.Close()
-	return b.Healthy(ctx)
-}
-
 // buildSinks creates the ordered list of report sinks from configuration.
 func buildSinks(cfg *config.Config) []sink.Sink {
 	return []sink.Sink{
@@ -153,10 +129,10 @@ func initLogging(level string, format string) {
 		log.Logger = zerolog.New(redacted).With().Timestamp().Logger()
 	}
 
-	// go-cs-bouncer uses logrus internally. Silence it so its text-format lines
-	// don't appear mixed in with our structured JSON output. Errors from the
-	// bouncer library are returned as Go errors and logged via zerolog below.
-	logrus.SetOutput(io.Discard)
+	// go-cs-bouncer and the CrowdSec API client log through logrus — including
+	// LAPI poll failures, which are never returned as Go errors. Forward them
+	// into zerolog so they share our format and redaction.
+	logger.BridgeLogrus(&log.Logger)
 
 	switch level {
 	case "trace":

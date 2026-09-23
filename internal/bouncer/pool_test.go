@@ -27,8 +27,7 @@ func (s *countingSink) Report(_ context.Context, _ *sink.Report) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *countingSink) Healthy(_ context.Context) error { return nil }
-func (s *countingSink) Close() error                    { return nil }
+func (s *countingSink) Close() error { return nil }
 func (s *countingSink) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -50,8 +49,7 @@ func (s *slowSink) Report(ctx context.Context, r *sink.Report) error {
 	}
 	return s.counted.Report(ctx, r)
 }
-func (s *slowSink) Healthy(_ context.Context) error { return nil }
-func (s *slowSink) Close() error                    { return nil }
+func (s *slowSink) Close() error { return nil }
 
 // makeDecision builds a Decision with the given IP (all other fields minimal).
 func makeDecision(ip string) *decision.Decision {
@@ -77,7 +75,7 @@ func TestWorkerPool_10kDecisions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(ctx, workers, total, store, []sink.Sink{cs}, nil)
+	pool := newWorkerPool(ctx, workers, total, store, []sink.Sink{cs}, nil, nil)
 
 	for i := 0; i < total; i++ {
 		// Use different IPs so cooldown doesn't block all of them.
@@ -100,7 +98,7 @@ func TestWorkerPool_QuotaNotExceeded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(ctx, 4, total, store, []sink.Sink{cs}, nil)
+	pool := newWorkerPool(ctx, 4, total, store, []sink.Sink{cs}, nil, nil)
 
 	for i := 0; i < total; i++ {
 		pool.submit(workerJob{d: makeDecision(uniqueIP(i))})
@@ -124,7 +122,7 @@ func TestWorkerPool_CooldownAtomicity(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := newWorkerPool(ctx, 8, total, store, []sink.Sink{cs}, nil)
+	pool := newWorkerPool(ctx, 8, total, store, []sink.Sink{cs}, nil, nil)
 
 	const ip = "203.0.113.42"
 	for i := 0; i < total; i++ {
@@ -154,7 +152,7 @@ func TestWorkerPool_Backpressure(t *testing.T) {
 
 	// A slow sink ensures workers stay busy while we flood the buffer.
 	ss := &slowSink{delay: 50 * time.Millisecond, counted: countingSink{}}
-	pool := newWorkerPool(ctx, 1, buf, store, []sink.Sink{ss}, nil)
+	pool := newWorkerPool(ctx, 1, buf, store, []sink.Sink{ss}, nil, nil)
 
 	var dropped atomic.Int64
 	for i := 0; i < flood; i++ {
@@ -180,7 +178,7 @@ func TestWorkerPool_GracefulShutdown(t *testing.T) {
 	ss := &slowSink{delay: 200 * time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	pool := newWorkerPool(ctx, 4, 64, store, []sink.Sink{ss}, nil)
+	pool := newWorkerPool(ctx, 4, 64, store, []sink.Sink{ss}, nil, nil)
 
 	for i := 0; i < 20; i++ {
 		pool.submit(workerJob{d: makeDecision(uniqueIP(i))})
@@ -261,8 +259,7 @@ func (s *rateLimitSink) Name() string { return "rate-limit" }
 func (s *rateLimitSink) Report(_ context.Context, _ *sink.Report) error {
 	return sink.ErrRateLimit{RetryAfter: s.retryAfter}
 }
-func (s *rateLimitSink) Healthy(_ context.Context) error { return nil }
-func (s *rateLimitSink) Close() error                    { return nil }
+func (s *rateLimitSink) Close() error { return nil }
 
 // retryEnqueueStore records RetryEnqueue calls for assertions.
 type retryEnqueueStore struct {
@@ -271,7 +268,7 @@ type retryEnqueueStore struct {
 	enqueued []string
 }
 
-func (s *retryEnqueueStore) RetryEnqueue(ip, _ string, _ time.Time) error {
+func (s *retryEnqueueStore) RetryEnqueue(ip, _ string, _ time.Time, _ int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.enqueued = append(s.enqueued, ip)
@@ -326,7 +323,7 @@ func TestWorkerPool_RetryJob_SkipsCooldownQuota(t *testing.T) {
 
 type retryEnqueueErrStore struct{ *storage.MemStore }
 
-func (s *retryEnqueueErrStore) RetryEnqueue(string, string, time.Time) error {
+func (s *retryEnqueueErrStore) RetryEnqueue(string, string, time.Time, int) error {
 	return errors.New("enqueue failed")
 }
 

@@ -23,7 +23,8 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 - Per-IP cooldown enforcement (15-minute default, matching AbuseIPDB's deduplication window)
 - Daily quota tracking with UTC midnight reset and disk persistence
 - Optional pre-check to skip AbuseIPDB-whitelisted IPs before consuming report quota
-- Exponential backoff retry with special handling for 422 (duplicate) and 429 (rate-limited) responses
+- Exponential backoff retry; failed reports (network errors, 5xx, 429 rate limits) are persisted and retried, honouring AbuseIPDB's `Retry-After` / `X-RateLimit-Reset` headers; duplicate-report 429s and invalid-parameter 422s are dropped, not retried
+- Health endpoints (`/healthz`, `/readyz`) driven by the last successful LAPI pull and AbuseIPDB call — probes never touch `state.db` and never spend API quota
 - State persists across container restarts via named Docker volume
 - Structured JSON logging compatible with Loki, Splunk, and other SIEM tools
 - Zero PII in reports -- only scenario names are transmitted
@@ -35,7 +36,7 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 - `cap_drop: ALL` and `read_only: true` by default in docker-compose.yml
 - Seccomp syscall allowlist (`security/seccomp-bouncer.json`) blocks all syscalls not required by the binary
 - TLS 1.2+ enforced on all outbound connections
-- API keys loaded from environment variables only; 80-character hex keys and Bearer tokens are automatically redacted from log output
+- API keys loaded from environment variables or `*_FILE` secrets; 80-character hex keys, Bearer tokens and `X-Api-Key` headers are automatically redacted from log output
 - Docker image is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC) and accompanied by a CycloneDX SBOM on every release
 
 ## Compliance
@@ -73,7 +74,7 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │    7. min duration check                            │
 │                                                     │
 │              │  (non-blocking enqueue; drop →       │
-│              │   buffer-full metric on overflow)    │
+│              │   buffer_full metric on overflow)    │
 │              v                                      │
 │    ┌─────────────────────────┐                      │
 │    │  job queue (default 256)│                      │
@@ -259,7 +260,7 @@ CONFIG_FILE=                  # Optional path to YAML config file
 WORKER_COUNT=4                # Goroutines sending reports concurrently (1–64)
 WORKER_BUFFER=256             # In-memory job queue size (1–10000)
 JANITOR_INTERVAL=5m           # How often to prune state.db and update DB size metric (min 30s)
-RETRY_CHECK_INTERVAL=30s      # How often to retry rate-limited decisions (min 10s)
+RETRY_CHECK_INTERVAL=30s      # How often to resend queued (failed / rate-limited) decisions (min 10s)
 LAPI_TIMEOUT=10s              # HTTP timeout for LAPI requests (min 200ms)
 ```
 
@@ -287,7 +288,7 @@ These decisions are intentionally never reported:
 
 - **impossible-travel scenarios** - Account compromise heuristics, not IP-based abuse
 - **CAPI and lists origins** - Community blocklist IPs that are already globally known
-- **Private IP addresses** - RFC1918, loopback (127.0.0.0/8), link-local, CGNAT (100.64.0.0/10), and IPv6 private ranges
+- **Private / reserved IP addresses** - RFC1918, loopback (127.0.0.0/8), link-local, CGNAT (100.64.0.0/10), benchmarking (198.18.0.0/15), multicast, 240.0.0.0/4, and IPv6 loopback/link-local/ULA/multicast — IPv4-mapped IPv6 (`::ffff:10.0.0.1`) is checked as IPv4
 - **Non-IP scopes** - Ranges, ASNs, country-level decisions (AbuseIPDB only accepts single IPs)
 - **IPs within the cooldown window** - Already reported within the past 15 minutes
 - **Decisions exceeding the daily quota** - Once the limit is reached, no further reports are sent that UTC day
@@ -316,8 +317,10 @@ The HTTP server (enabled by default at `:9090`) exposes three endpoints:
 | Endpoint | Description |
 |----------|-------------|
 | `GET /metrics` | Prometheus metrics in text exposition format |
-| `GET /healthz` | Liveness probe — `ok` (HTTP 200) when the process is alive |
-| `GET /readyz` | Readiness probe — HTTP 200 when LAPI is reachable, 503 otherwise |
+| `GET /healthz` | Liveness — HTTP 200 while the LAPI has been polled successfully within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls have failed; 503 otherwise. A 2-minute startup grace applies. |
+| `GET /readyz` | Readiness — as `/healthz`, and additionally 503 until the first successful LAPI pull |
+
+Both health endpoints return a JSON body (`status`, `reason`, `last_lapi_pull`, `last_abuseipdb_ok`, `last_abuseipdb_failure`, `consecutive_abuseipdb_failures`) and are served from memory: they never open `state.db` and never call AbuseIPDB. The Docker `HEALTHCHECK` runs `bouncer healthcheck`, which GETs `/healthz` on `METRICS_ADDR` — so it requires `METRICS_ENABLED=true`.
 
 Prometheus metrics:
 
@@ -325,10 +328,15 @@ Prometheus metrics:
 |--------|------|--------|-------------|
 | `cs_abuseipdb_decisions_processed_total` | Counter | — | All decisions received from the LAPI stream |
 | `cs_abuseipdb_reports_sent_total` | Counter | — | Successful reports sent to AbuseIPDB |
-| `cs_abuseipdb_decisions_skipped_total` | Counter | `filter` | Decisions dropped per filter stage |
-| `cs_abuseipdb_api_errors_total` | Counter | `type` | API errors: `rate_limit`, `auth`, `network`, `timeout` |
+| `cs_abuseipdb_decisions_skipped_total` | Counter | `filter` | Decisions dropped, by filter or outcome (`cooldown`, `quota`, `duplicate`, `rejected`, `retry_exhausted`, `buffer_full`, …) |
+| `cs_abuseipdb_api_errors_total` | Counter | `type` | API errors: `rate_limit`, `auth`, `validation`, `network`, `timeout` |
 | `cs_abuseipdb_quota_remaining` | Gauge | — | Remaining daily quota (resets at UTC midnight) |
 | `cs_abuseipdb_bbolt_db_size_bytes` | Gauge | — | Size of `state.db` in bytes, updated by the janitor |
+| `cs_abuseipdb_retry_queue_size` | Gauge | — | Decisions waiting in the persistent retry queue |
+| `cs_abuseipdb_retry_queue_enqueued_total` | Counter | — | Decisions queued for retry (429 or transient failure) |
+| `cs_abuseipdb_retry_attempts_total` | Counter | — | Retry attempts submitted from the queue |
+| `cs_abuseipdb_last_lapi_pull_timestamp_seconds` | Gauge | — | Unix time of the last successful LAPI poll |
+| `cs_abuseipdb_last_report_success_timestamp_seconds` | Gauge | — | Unix time of the last successful AbuseIPDB report |
 
 ```bash
 curl http://localhost:9090/metrics | grep cs_abuseipdb
@@ -340,14 +348,14 @@ JSON format (default):
 
 ```json
 {"time":1739836530,"level":"info","ip":"203.0.113.42","sink":"abuseipdb","daily":15,"limit":1000,"msg":"reported"}
-{"time":1739836530,"level":"debug","ip":"192.168.1.1","filter":"private-ip","detail":"ip=192.168.1.1 is private/reserved","msg":"decision filtered (pre-queue)"}
+{"time":1739836530,"level":"debug","ip":"192.168.1.1","filter":"private_ip","detail":"ip=192.168.1.1 is private/reserved","msg":"decision filtered (pre-queue)"}
 ```
 
 Human-readable format (`LOG_FORMAT=text`):
 
 ```
 12:15:30 INF reported ip=203.0.113.42 sink=abuseipdb daily=15 limit=1000
-12:15:31 DBG decision filtered (pre-queue) ip=192.168.1.1 filter=private-ip
+12:15:31 DBG decision filtered (pre-queue) ip=192.168.1.1 filter=private_ip
 ```
 
 Enable debug logging:
@@ -378,7 +386,7 @@ The binary compiles to approximately 8MB. Docker is required (Go does not need t
 docker compose build
 ```
 
-To run tests directly (requires Go 1.23+):
+To run tests directly (requires Go 1.26+; `-race` also needs a C compiler / CGO):
 
 ```bash
 go test -race ./... -count=1 -timeout=120s

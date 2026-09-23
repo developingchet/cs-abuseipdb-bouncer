@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -20,21 +24,13 @@ import (
 )
 
 type stubRuntime struct {
-	runFn    func(context.Context) error
-	healthFn func(context.Context) error
-	closeN   atomic.Int32
+	runFn  func(context.Context) error
+	closeN atomic.Int32
 }
 
 func (s *stubRuntime) Run(ctx context.Context) error {
 	if s.runFn != nil {
 		return s.runFn(ctx)
-	}
-	return nil
-}
-
-func (s *stubRuntime) Healthy(ctx context.Context) error {
-	if s.healthFn != nil {
-		return s.healthFn(ctx)
 	}
 	return nil
 }
@@ -177,40 +173,127 @@ func TestRunHealthcheck_LoadConfigError(t *testing.T) {
 	assert.Contains(t, err.Error(), "configuration error")
 }
 
-func TestRunHealthcheck_RuntimeInitError(t *testing.T) {
+func TestRunHealthcheck_MetricsDisabled(t *testing.T) {
 	installMainSeams(t)
+	loadConfig = func() (*config.Config, error) { return &config.Config{MetricsAddr: ""}, nil }
+
+	err := runHealthcheck(nil, nil)
+	require.ErrorIs(t, err, errMetricsDisabled)
+}
+
+func TestRunHealthcheck_InvalidAddr(t *testing.T) {
+	installMainSeams(t)
+	loadConfig = func() (*config.Config, error) { return &config.Config{MetricsAddr: "no-port"}, nil }
+
+	err := runHealthcheck(nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid METRICS_ADDR")
+}
+
+// TestRunHealthcheck_NeverTouchesRuntime guards the original bug: the probe
+// must not construct a Bouncer (which opens the bbolt-locked state.db).
+func TestRunHealthcheck_NeverTouchesRuntime(t *testing.T) {
+	installMainSeams(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/healthz", r.URL.Path)
+		fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+	defer srv.Close()
 	loadConfig = func() (*config.Config, error) {
-		return &config.Config{LogFormat: "json"}, nil
+		return &config.Config{MetricsAddr: strings.TrimPrefix(srv.URL, "http://")}, nil
 	}
-	newRuntime = func(cfg *config.Config, sinks []sink.Sink) (runtimeBouncer, error) {
-		return nil, errors.New("boom")
+	newRuntime = func(*config.Config, []sink.Sink) (runtimeBouncer, error) {
+		t.Fatal("healthcheck must not build the runtime")
+		return nil, nil
+	}
+
+	cmd := newRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"healthcheck"})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), `"status":"ok"`)
+}
+
+func TestRunHealthcheck_Unhealthy(t *testing.T) {
+	installMainSeams(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"status":"unhealthy","reason":"last successful LAPI pull was 10m0s ago"}`)
+	}))
+	defer srv.Close()
+	loadConfig = func() (*config.Config, error) {
+		return &config.Config{MetricsAddr: strings.TrimPrefix(srv.URL, "http://")}, nil
 	}
 
 	err := runHealthcheck(nil, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "boom")
+	assert.Contains(t, err.Error(), "http 503")
+	assert.Contains(t, err.Error(), "LAPI pull")
 }
 
-func TestRunHealthcheck_CallsHealthyAndClose(t *testing.T) {
+func TestRunHealthcheck_ConnectionRefused(t *testing.T) {
 	installMainSeams(t)
-	loadConfig = func() (*config.Config, error) {
-		return &config.Config{LogFormat: "json"}, nil
-	}
-	rt := &stubRuntime{
-		healthFn: func(ctx context.Context) error {
-			deadline, ok := ctx.Deadline()
-			require.True(t, ok)
-			assert.WithinDuration(t, time.Now().Add(10*time.Second), deadline, 500*time.Millisecond)
-			return nil
-		},
-	}
-	newRuntime = func(cfg *config.Config, sinks []sink.Sink) (runtimeBouncer, error) {
-		return rt, nil
-	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	loadConfig = func() (*config.Config, error) { return &config.Config{MetricsAddr: addr}, nil }
+
+	err = runHealthcheck(nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "healthcheck")
+}
+
+func TestRunHealthcheck_BadHostBuildsNoRequest(t *testing.T) {
+	installMainSeams(t)
+	loadConfig = func() (*config.Config, error) { return &config.Config{MetricsAddr: "bad host:9090"}, nil }
 
 	err := runHealthcheck(nil, nil)
-	require.NoError(t, err)
-	assert.EqualValues(t, 1, rt.closeN.Load())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "build request")
+}
+
+// errBodyTransport returns a 200 whose body fails mid-read.
+type errBodyTransport struct{}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("reset by peer") }
+func (errReader) Close() error             { return nil }
+
+func (errBodyTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: errReader{}, Header: http.Header{}}, nil
+}
+
+func TestRunHealthcheck_BodyReadError(t *testing.T) {
+	installMainSeams(t)
+	orig := probeClient
+	probeClient = &http.Client{Transport: errBodyTransport{}}
+	t.Cleanup(func() { probeClient = orig })
+	loadConfig = func() (*config.Config, error) { return &config.Config{MetricsAddr: ":9090"}, nil }
+
+	err := runHealthcheck(nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read response")
+}
+
+func TestHealthURL(t *testing.T) {
+	tests := []struct {
+		addr, want string
+	}{
+		{":9090", "http://127.0.0.1:9090/healthz"},
+		{"0.0.0.0:9090", "http://127.0.0.1:9090/healthz"},
+		{"[::]:9090", "http://127.0.0.1:9090/healthz"},
+		{"127.0.0.1:9191", "http://127.0.0.1:9191/healthz"},
+		{"10.1.2.3:9090", "http://10.1.2.3:9090/healthz"},
+		{"[::1]:9090", "http://[::1]:9090/healthz"},
+	}
+	for _, tt := range tests {
+		got, err := healthURL(tt.addr)
+		require.NoError(t, err, tt.addr)
+		assert.Equal(t, tt.want, got, tt.addr)
+	}
 }
 
 func TestBuildSinks(t *testing.T) {

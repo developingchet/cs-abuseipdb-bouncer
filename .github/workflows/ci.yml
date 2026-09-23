@@ -57,10 +57,11 @@ jobs:
 
   # ── 3. Seccomp integration test ─────────────────────────────────────────────
   # Builds the real image and runs it under the seccomp profile with all the
-  # same security options used in production. The bouncer will exit with a
-  # connection error (no real LAPI) — that is expected. What must NOT appear
-  # is the runc "reopen exec fifo" / "statx: operation not permitted" error,
-  # which signals that seccomp blocked the container before the Go binary ran.
+  # same security options used in production. The bouncer keeps retrying the
+  # (unreachable) LAPI until `timeout` stops it — that is expected. What must
+  # NOT appear is the runc "reopen exec fifo" / "statx: operation not permitted"
+  # error, which signals that seccomp blocked the container before the Go
+  # binary ran.
   test-seccomp:
     name: Seccomp Integration Test
     runs-on: ubuntu-latest
@@ -137,7 +138,34 @@ jobs:
 
           echo ""
           echo "PASS: container started under seccomp profile."
-          echo "      (runc exec fifo completed; bouncer exited normally on missing LAPI)"
+          echo "      (runc exec fifo completed; bouncer ran until stopped)"
+
+      - name: Healthcheck works while the bouncer holds state.db
+        run: |
+          # Regression test: the HEALTHCHECK command must query /healthz over
+          # HTTP, not open the bbolt file the running process has locked.
+          docker run -d --name hc-test \
+            --security-opt "seccomp:./security/seccomp-bouncer.json" \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            --read-only \
+            --tmpfs /tmp:size=10M,uid=65532,gid=65532,mode=1777 \
+            --tmpfs /data:size=50M,uid=65532,gid=65532 \
+            -e CROWDSEC_LAPI_URL=http://no-such-host-ci-test:8080 \
+            -e CROWDSEC_LAPI_KEY=ci-test-lapi-key \
+            -e ABUSEIPDB_API_KEY=ci-test-abuseipdb-key \
+            cs-bouncer-test:ci
+          trap 'docker logs hc-test; docker rm -f hc-test >/dev/null' EXIT
+
+          for i in $(seq 1 20); do
+            if docker exec hc-test /usr/local/bin/bouncer healthcheck; then
+              echo "PASS: healthcheck succeeded during startup grace"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FAIL: healthcheck never succeeded"
+          exit 1
 
   # ── 4. Lint ──────────────────────────────────────────────────────────────────
   lint:
@@ -150,6 +178,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: golangci/golangci-lint-action@v6
+      # golangci-lint v2 (built with a Go that can lint this module's go directive).
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.13

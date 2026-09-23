@@ -25,7 +25,7 @@ func buildTestBouncer(store storage.Store, sinks []sink.Sink) *Bouncer {
 	// pool must be initialised because flushRetryQueue calls b.pool.submit.
 	ctx, cancel := context.WithCancel(context.Background())
 	_ = cancel
-	b.pool = newWorkerPool(ctx, 1, 64, store, sinks, nil)
+	b.pool = newWorkerPool(ctx, 1, 64, store, sinks, nil, nil)
 	return b
 }
 
@@ -36,7 +36,7 @@ func TestFlushRetryQueue_DrainsPastDue(t *testing.T) {
 
 	// Enqueue a past-due retry entry.
 	past := time.Now().Add(-time.Second)
-	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -64,7 +64,7 @@ func TestFlushRetryQueue_IgnoresFuture(t *testing.T) {
 
 	// Enqueue a future entry — should not be flushed.
 	future := time.Now().Add(time.Hour)
-	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future); err != nil {
+	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -87,10 +87,10 @@ func TestFlushRetryQueue_BufferFull_Metrics(t *testing.T) {
 	// Build a pool with zero-length buffer so every submit fails.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b.pool = newWorkerPool(ctx, 1, 1, store, []sink.Sink{cs}, nil)
+	b.pool = newWorkerPool(ctx, 1, 1, store, []sink.Sink{cs}, nil, nil)
 
 	past := time.Now().Add(-time.Second)
-	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestFlushRetryQueue_DequeueError(t *testing.T) {
 
 	// Seed a past-due entry so RetryCount > 0 and the dequeue path is reached.
 	past := time.Now().Add(-time.Second)
-	if err := base.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := base.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -164,11 +164,11 @@ func TestRunRetryWorker_TickerFires(t *testing.T) {
 	b := &Bouncer{cfg: cfg, store: store, sinks: []sink.Sink{cs}}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	b.pool = newWorkerPool(ctx, 1, 64, store, []sink.Sink{cs}, nil)
+	b.pool = newWorkerPool(ctx, 1, 64, store, []sink.Sink{cs}, nil, nil)
 
 	// Enqueue a past-due entry so a tick actually does something observable.
 	past := time.Now().Add(-time.Second)
-	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -193,10 +193,10 @@ func TestRunRetryWorker_DrainOnStartup(t *testing.T) {
 	b := &Bouncer{cfg: cfg, store: store, sinks: []sink.Sink{cs}}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	b.pool = newWorkerPool(ctx, 1, 64, store, []sink.Sink{cs}, nil)
+	b.pool = newWorkerPool(ctx, 1, 64, store, []sink.Sink{cs}, nil, nil)
 
 	past := time.Now().Add(-time.Second)
-	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := store.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -250,7 +250,7 @@ func TestFlushRetryQueue_DeleteError(t *testing.T) {
 	base := storage.NewMemStore(1000, time.Minute)
 
 	past := time.Now().Add(-time.Second)
-	if err := base.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := base.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 

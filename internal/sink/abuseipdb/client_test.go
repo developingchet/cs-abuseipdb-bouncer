@@ -85,17 +85,40 @@ func TestReport_Success(t *testing.T) {
 	assert.Equal(t, "CrowdSec detection | scenario: ssh-bf", received.Get("comment"))
 }
 
-func TestReport_Duplicate422(t *testing.T) {
+func TestReport_Validation422_IsPermanent(t *testing.T) {
+	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(422)
-		fmt.Fprint(w, `{"errors":[{"detail":"Duplicate report within last 15 minutes"}]}`)
+		calls++
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, `{"errors":[{"detail":"The ip address must be a valid IPv4 or IPv6 address."}]}`)
 	}))
 	defer srv.Close()
 
 	c := buildClient(srv.URL, srv.URL)
 	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
-	// 422 is not an error -- duplicate report is silently accepted
-	assert.NoError(t, err)
+	var perm sink.ErrPermanent
+	require.ErrorAs(t, err, &perm)
+	assert.Contains(t, err.Error(), "422")
+	assert.Contains(t, err.Error(), "valid IPv4")
+	assert.Equal(t, 1, calls, "422 must not be retried")
+}
+
+func TestReport_Duplicate429_ReturnsErrDuplicate(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "900")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"errors":[{"detail":"You can only report the same IP address (`+"`203.0.113.42`"+`) once in 15 minutes.","status":429,"source":{"parameter":"ip"}}]}`)
+	}))
+	defer srv.Close()
+
+	c := buildClient(srv.URL, srv.URL)
+	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
+	require.ErrorIs(t, err, sink.ErrDuplicate)
+	var rl sink.ErrRateLimit
+	assert.False(t, errors.As(err, &rl), "duplicate must not be treated as a rate limit")
+	assert.Equal(t, 1, calls)
 }
 
 func TestReport_Unauthorized401(t *testing.T) {
@@ -111,8 +134,60 @@ func TestReport_Unauthorized401(t *testing.T) {
 	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
+	assert.ErrorIs(t, err, sink.ErrUnauthorized)
 	// Must not retry on 401
 	assert.Equal(t, 1, calls)
+}
+
+func TestReport_RateLimit429_UsesRetryAfterHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3600")
+		w.Header().Set("X-RateLimit-Reset", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"errors":[{"detail":"Daily rate limit of 1000 requests exceeded for this endpoint. See headers for additional details."}]}`)
+	}))
+	defer srv.Close()
+
+	c := buildClient(srv.URL, srv.URL)
+	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
+	var rl sink.ErrRateLimit
+	require.ErrorAs(t, err, &rl)
+	assert.Equal(t, time.Hour, rl.RetryAfter)
+}
+
+func TestRetryAfter(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	hdr := func(kv ...string) http.Header {
+		h := http.Header{}
+		for i := 0; i < len(kv); i += 2 {
+			h.Set(kv[i], kv[i+1])
+		}
+		return h
+	}
+	tests := []struct {
+		name string
+		h    http.Header
+		body string
+		want time.Duration
+	}{
+		{"retry-after header", hdr("Retry-After", "120"), ``, 2 * time.Minute},
+		{"reset header when no retry-after", hdr("X-RateLimit-Reset", "1700000300"), ``, 5 * time.Minute},
+		{"reset in the past ignored", hdr("X-RateLimit-Reset", "1600000000"), ``, time.Minute},
+		{"invalid retry-after falls through to reset", hdr("Retry-After", "soon", "X-RateLimit-Reset", "1700000030"), ``, 30 * time.Second},
+		{"body hint", http.Header{}, `{"errors":[{"detail":"Try again in 42 seconds."}]}`, 42 * time.Second},
+		{"default", http.Header{}, `{"errors":[{"detail":"Rate limit exceeded"}]}`, time.Minute},
+		{"capped", hdr("Retry-After", "999999999"), ``, maxRetryAfter},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, retryAfter(tt.h, []byte(tt.body), now))
+		})
+	}
+}
+
+func TestIsDuplicateReport(t *testing.T) {
+	assert.True(t, isDuplicateReport("You can only report the same IP address (`1.2.3.4`) once in 15 minutes."))
+	assert.False(t, isDuplicateReport("Daily rate limit of 1000 requests exceeded for this endpoint."))
 }
 
 func TestReport_RateLimit429(t *testing.T) {
@@ -279,7 +354,7 @@ func TestDoReport_InvalidURL(t *testing.T) {
 		ReportURL: "://bad-url",
 		CheckURL:  defaultCheckURL,
 	})
-	_, _, err := c.doReport(context.Background(), "203.0.113.42", "15", "test")
+	_, _, _, err := c.doReport(context.Background(), "203.0.113.42", "15", "test")
 	require.Error(t, err)
 }
 
@@ -410,47 +485,17 @@ func TestReport_StripsCIDR(t *testing.T) {
 	assert.Equal(t, "203.0.113.42", receivedIP)
 }
 
-func TestHealthy_OK(t *testing.T) {
+func TestCheckWhitelisted_Non200IsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "test-key", r.Header.Get("Key"))
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"data":{"isWhitelisted":false}}`)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"errors":[{"detail":"Daily rate limit of 1000 requests exceeded for this endpoint."}]}`)
 	}))
 	defer srv.Close()
 
 	c := buildClient(srv.URL, srv.URL)
-	assert.NoError(t, c.Healthy(context.Background()))
-}
-
-func TestHealthy_Unauthorized(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	c := buildClient(srv.URL, srv.URL)
-	err := c.Healthy(context.Background())
+	_, err := c.checkWhitelisted(context.Background(), "203.0.113.42")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid API key")
-}
-
-func TestHealthy_RequestBuildError(t *testing.T) {
-	c := NewClient(ClientConfig{
-		APIKey:   "test-key",
-		CheckURL: "://bad-url",
-	})
-	err := c.Healthy(context.Background())
-	require.Error(t, err)
-}
-
-func TestHealthy_NetworkError(t *testing.T) {
-	c := NewClient(ClientConfig{
-		APIKey:   "test-key",
-		CheckURL: "http://127.0.0.1:1",
-	})
-	err := c.Healthy(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unreachable")
+	assert.Contains(t, err.Error(), "429")
 }
 
 func TestSleepWithContext_ZeroDuration(t *testing.T) {
@@ -500,9 +545,9 @@ func TestExtractRetryAfter(t *testing.T) {
 		expected int
 	}{
 		{`{"errors":[{"detail":"Daily rate limit of 1000 requests exceeded. Try again in 42 seconds."}]}`, 42},
-		{`{"errors":[{"detail":"Rate limit exceeded"}]}`, 60}, // no number -- use default
-		{`not json`, 60},
-		{`{"errors":[{"detail":"Try again in 0 seconds."}]}`, 60}, // zero -- use default
+		{`{"errors":[{"detail":"Rate limit exceeded"}]}`, 0}, // no number -- no hint
+		{`not json`, 0},
+		{`{"errors":[{"detail":"Try again in 0 seconds."}]}`, 0}, // zero -- no hint
 	}
 
 	for _, tt := range tests {

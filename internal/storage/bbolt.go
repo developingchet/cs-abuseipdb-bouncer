@@ -246,19 +246,13 @@ func (s *BoltStore) CooldownConsume(ip string) (bool, error) {
 
 // --- Retry queue ---
 
-// RetryEnqueue persists ip+scenario for retry after retryAfter.
-// If an entry for this IP already exists, its Attempts counter is incremented.
-func (s *BoltStore) RetryEnqueue(ip, scenario string, retryAfter time.Time) error {
+// RetryEnqueue persists ip+scenario for retry after retryAfter, replacing any
+// existing entry for the same IP.
+func (s *BoltStore) RetryEnqueue(ip, scenario string, retryAfter time.Time, attempts int) error {
 	key := []byte(sanitizeIP(ip))
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketRetry)
-		entry := retryEntry{IP: ip, Scenario: scenario, RetryAfter: retryAfter.Unix(), Attempts: 1}
-		if existing := b.Get(key); len(existing) > 0 {
-			var e retryEntry
-			if err := json.Unmarshal(existing, &e); err == nil {
-				entry.Attempts = e.Attempts + 1
-			}
-		}
+		entry := retryEntry{IP: ip, Scenario: scenario, RetryAfter: retryAfter.Unix(), Attempts: attempts}
 		data, err := marshalRetryEntry(entry)
 		if err != nil {
 			return err

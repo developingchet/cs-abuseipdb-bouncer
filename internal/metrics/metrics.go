@@ -25,10 +25,10 @@ var (
 	}, []string{"filter"})
 
 	// APIErrors counts AbuseIPDB API errors, labelled by type.
-	// Valid types: rate_limit, auth, network, timeout.
+	// Valid types: rate_limit, auth, validation, network, timeout.
 	APIErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "cs_abuseipdb_api_errors_total",
-		Help: "AbuseIPDB API errors, by type (rate_limit|auth|network|timeout).",
+		Help: "AbuseIPDB API errors, by type (rate_limit|auth|validation|network|timeout).",
 	}, []string{"type"})
 
 	// QuotaRemaining is a gauge of remaining daily AbuseIPDB report quota (UTC).
@@ -44,11 +44,11 @@ var (
 		Help: "Size of state.db in bytes, updated by the janitor.",
 	})
 
-	// RetryQueueSize is the number of rate-limited decisions currently waiting
+	// RetryQueueSize is the number of failed decisions currently waiting
 	// in the retry queue, refreshed by the janitor on each tick.
 	RetryQueueSize = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "cs_abuseipdb_retry_queue_size",
-		Help: "Number of rate-limited decisions currently waiting in the retry queue.",
+		Help: "Number of failed decisions currently waiting in the retry queue.",
 	})
 
 	// RetryAttempts counts total retry attempts submitted from the retry queue.
@@ -58,10 +58,22 @@ var (
 	})
 
 	// RetryQueueEnqueued counts total decisions enqueued into the retry queue
-	// after receiving an HTTP 429 response from AbuseIPDB.
+	// after an HTTP 429 or a transient failure (network error, 5xx).
 	RetryQueueEnqueued = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "cs_abuseipdb_retry_queue_enqueued_total",
-		Help: "Total decisions enqueued into the retry queue after a 429 response.",
+		Help: "Total decisions enqueued into the retry queue after a 429 or transient failure.",
+	})
+
+	// LastLAPIPull is the Unix time of the last successful CrowdSec LAPI poll.
+	LastLAPIPull = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "cs_abuseipdb_last_lapi_pull_timestamp_seconds",
+		Help: "Unix time of the last successful CrowdSec LAPI decision-stream poll.",
+	})
+
+	// LastReportSuccess is the Unix time of the last successful AbuseIPDB call.
+	LastReportSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "cs_abuseipdb_last_report_success_timestamp_seconds",
+		Help: "Unix time of the last successful AbuseIPDB API call.",
 	})
 )
 
@@ -84,5 +96,7 @@ func RegisterWith(reg prometheus.Registerer) {
 		RetryQueueSize,
 		RetryAttempts,
 		RetryQueueEnqueued,
+		LastLAPIPull,
+		LastReportSuccess,
 	)
 }

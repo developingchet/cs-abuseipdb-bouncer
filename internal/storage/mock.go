@@ -139,15 +139,10 @@ func (m *MemStore) CooldownConsume(ip string) (bool, error) {
 
 // --- Retry queue ---
 
-func (m *MemStore) RetryEnqueue(ip, scenario string, retryAfter time.Time) error {
+func (m *MemStore) RetryEnqueue(ip, scenario string, retryAfter time.Time, attempts int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := sanitizeIP(ip)
-	attempts := 1
-	if e, ok := m.retries[key]; ok {
-		attempts = e.Attempts + 1
-	}
-	m.retries[key] = retryEntry{IP: ip, Scenario: scenario, RetryAfter: retryAfter.Unix(), Attempts: attempts}
+	m.retries[sanitizeIP(ip)] = retryEntry{IP: ip, Scenario: scenario, RetryAfter: retryAfter.Unix(), Attempts: attempts}
 	return nil
 }
 

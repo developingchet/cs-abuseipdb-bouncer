@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,14 +175,11 @@ func Load() (*Config, error) {
 	// ABUSEIPDB_MIN_DURATION: accept both Go duration strings ("5m") and
 	// plain integer seconds ("300") for backwards-compatibility.
 	if raw := stripQuotes(os.Getenv("ABUSEIPDB_MIN_DURATION")); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			cfg.MinDuration = d
-		} else {
-			var secs int64
-			if _, err := fmt.Sscanf(raw, "%d", &secs); err == nil {
-				cfg.MinDuration = time.Duration(secs) * time.Second
-			}
+		d, err := parseMinDuration(raw)
+		if err != nil {
+			return nil, err
 		}
+		cfg.MinDuration = d
 	}
 
 	// Legacy compat: honour STATE_DIR if DATA_DIR is not explicitly set.
@@ -190,10 +188,17 @@ func Load() (*Config, error) {
 	}
 
 	// Resolve secrets from files (Docker / Kubernetes secrets).
-	if v := resolveFileSecret("CROWDSEC_LAPI_KEY"); v != "" {
+	v, err := resolveFileSecret("CROWDSEC_LAPI_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if v != "" {
 		cfg.LAPIKey = v
 	}
-	if v := resolveFileSecret("ABUSEIPDB_API_KEY"); v != "" {
+	if v, err = resolveFileSecret("ABUSEIPDB_API_KEY"); err != nil {
+		return nil, err
+	}
+	if v != "" {
 		cfg.AbuseIPDBAPIKey = v
 	}
 
@@ -235,6 +240,9 @@ func (c *Config) validate() error {
 	}
 	if c.DailyLimit < 1 || c.DailyLimit > maxDailyLimit {
 		errs = append(errs, "ABUSEIPDB_DAILY_LIMIT must be between 1 and 50000")
+	}
+	if c.MinDuration < 0 {
+		errs = append(errs, "ABUSEIPDB_MIN_DURATION must not be negative")
 	}
 	if c.PollInterval < minPollInterval {
 		errs = append(errs, "POLL_INTERVAL must be at least 2s")
@@ -337,23 +345,42 @@ func parseIPWhitelist(raw string) ([]netip.Prefix, error) {
 	return prefixes, nil
 }
 
+// parseMinDuration accepts a Go duration ("5m") or whole seconds ("300").
+func parseMinDuration(raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		secs, intErr := strconv.ParseInt(raw, 10, 64)
+		if intErr != nil {
+			return 0, fmt.Errorf("ABUSEIPDB_MIN_DURATION %q is not a duration (e.g. 5m) or whole seconds (e.g. 300)", raw)
+		}
+		d = time.Duration(secs) * time.Second
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("ABUSEIPDB_MIN_DURATION must not be negative, got %q", raw)
+	}
+	return d, nil
+}
+
 // resolveFileSecret returns the value of envKey if set and non-empty.
 // If envKey is unset or empty, it falls back to reading the file at
 // envKey+"_FILE" (Docker / Kubernetes secrets convention).
-// Returns empty string if neither source provides a value.
-func resolveFileSecret(envKey string) string {
+// Returns "" when neither is set, and an error when envKey+"_FILE" is set
+// but cannot be read — a mis-mounted secret should say so, not surface as a
+// "key is required" error.
+func resolveFileSecret(envKey string) (string, error) {
 	if v := stripQuotes(os.Getenv(envKey)); v != "" {
-		return v
+		return v, nil
 	}
-	path := stripQuotes(os.Getenv(envKey + "_FILE"))
+	fileKey := envKey + "_FILE"
+	path := stripQuotes(os.Getenv(fileKey))
 	if path == "" {
-		return ""
+		return "", nil
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("config: %s %q could not be read: %w", fileKey, path, err)
 	}
-	return strings.TrimSpace(string(b))
+	return strings.TrimSpace(string(b)), nil
 }
 
 // envBool is kept for the TestEnvBool test.

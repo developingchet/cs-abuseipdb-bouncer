@@ -4,12 +4,15 @@ package bouncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
@@ -33,6 +36,7 @@ type Bouncer struct {
 	httpSrv    *http.Server // nil when MetricsAddr == ""
 	pool       *workerPool
 	telemetry  *telemetry.Counter
+	health     *healthState
 }
 
 var closeShutdownTimeout = 5 * time.Second
@@ -58,6 +62,7 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 		filters:    buildFilters(cfg, store),
 		preFilters: buildPreQueueFilters(cfg),
 		store:      store,
+		health:     newHealthState(cfg.PollInterval, time.Now),
 	}
 	if cfg.UsageMetricsEnabled {
 		b.telemetry = telemetry.NewCounter()
@@ -73,23 +78,20 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 		TickerInterval:     cfg.PollInterval.String(),
 		UserAgent:          lapiUserAgent(cfg.BuildVersion),
 		InsecureSkipVerify: &tlsSkipVerify,
+		// Keep retrying while LAPI is unreachable at startup (e.g. CrowdSec
+		// still booting) instead of exiting; /healthz turns unhealthy if it
+		// never comes up.
+		RetryInitialConnect: true,
 	}
 
 	if cfg.MetricsAddr != "" {
+		// Health endpoints answer from in-memory state only: they never open
+		// state.db or call AbuseIPDB, so probes cost no quota and cannot be
+		// abused to drain it.
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		})
-		mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-			if err := b.Healthy(r.Context()); err != nil {
-				http.Error(w, err.Error(), http.StatusServiceUnavailable)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		})
+		mux.HandleFunc("/healthz", healthHandler(b.health.live))
+		mux.HandleFunc("/readyz", healthHandler(b.health.ready))
 		b.httpSrv = &http.Server{
 			Addr:         cfg.MetricsAddr,
 			Handler:      mux,
@@ -107,7 +109,7 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 // handled atomically inside the worker pool.
 //
 // Pipeline ordering rationale: stateless/cheap filters (action, scenario,
-// origin, scope, value, private-ip, whitelist, min-duration) run first so
+// origin, scope, value, private_ip, whitelist, min_duration) run first so
 // that the majority of decisions are rejected before any storage I/O occurs.
 // Quota and cooldown are intentionally last in buildFilters because they
 // involve storage reads and must only be charged for decisions that have
@@ -201,13 +203,20 @@ func (b *Bouncer) Run(ctx context.Context) error {
 		Int("workers", b.cfg.WorkerCount).
 		Msg("bouncer started")
 
+	// Start the worker pool before anything that submits to it.
+	b.pool = newWorkerPool(ctx, b.cfg.WorkerCount, b.cfg.WorkerBuffer, b.store, b.sinks, b.telemetry, b.health)
+
 	// Start background janitor (cooldown pruning + DB size metric).
 	go runJanitor(ctx, b.store, b.cfg.JanitorInterval)
-	// Start retry worker (re-submits rate-limited decisions after Retry-After expires).
-	go b.runRetryWorker(ctx)
 
-	// Start worker pool for concurrent reporting.
-	b.pool = newWorkerPool(ctx, b.cfg.WorkerCount, b.cfg.WorkerBuffer, b.store, b.sinks, b.telemetry)
+	// Start retry worker (re-submits queued decisions once their delay expires).
+	// It submits to the pool, so it must exit before pool.stop closes jobCh.
+	var retryDone sync.WaitGroup
+	retryDone.Add(1)
+	go func() {
+		defer retryDone.Done()
+		b.runRetryWorker(ctx)
+	}()
 
 	if b.cfg.UsageMetricsEnabled && b.telemetry != nil {
 		sender := telemetry.NewSender(
@@ -225,67 +234,93 @@ func (b *Bouncer) Run(ctx context.Context) error {
 		}()
 	}
 
-	go b.stream.Run(ctx)
+	streamErr := make(chan error, 1)
+	go func() { streamErr <- b.stream.Run(ctx) }()
 
+	err := b.consumeStream(ctx, streamErr)
+
+	// Orderly shutdown: stop producers, then drain the pool.
+	cancel()
+	retryDone.Wait()
+	b.pool.stop()
+	log.Info().Msg("bouncer stopped")
+	return err
+}
+
+// consumeStream reads decision batches from the LAPI stream until ctx is
+// cancelled (returns nil) or the stream fails (returns the cause).
+func (b *Bouncer) consumeStream(ctx context.Context, streamErr <-chan error) error {
 	for {
 		select {
 		case <-ctx.Done():
-			b.pool.stop()
-			log.Info().Msg("bouncer stopped")
 			return nil
+
+		case err := <-streamErr:
+			// go-cs-bouncer returns ctx.Err() when our context ends.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil
+			}
+			return fmt.Errorf("lapi stream stopped: %w", err)
 
 		case data, ok := <-b.stream.Stream:
 			if !ok {
-				b.pool.stop()
-				log.Info().Msg("lapi stream closed")
-				return nil
+				// go-cs-bouncer closes the channel after a fatal error and
+				// then returns that error from Run.
+				return fmt.Errorf("lapi stream closed: %w", <-streamErr)
 			}
+			b.health.recordLAPIPull()
 			if data == nil {
 				continue
 			}
+			b.handleStreamBatch(data)
+		}
+	}
+}
 
-			for _, d := range data.New {
-				if d == nil {
-					continue
-				}
-				dec := &decision.Decision{
-					Action:   "add",
-					Origin:   ptrStr(d.Origin),
-					Scenario: ptrStr(d.Scenario),
-					Scope:    ptrStr(d.Scope),
-					Value:    ptrStr(d.Value),
-					Duration: ptrStr(d.Duration),
-				}
+// handleStreamBatch filters new decisions and queues the survivors.
+func (b *Bouncer) handleStreamBatch(data *models.DecisionsStreamResponse) {
+	for _, d := range data.New {
+		if d == nil {
+			continue
+		}
+		dec := &decision.Decision{
+			Action:   "add",
+			Origin:   ptrStr(d.Origin),
+			Scenario: ptrStr(d.Scenario),
+			Scope:    ptrStr(d.Scope),
+			Value:    ptrStr(d.Value),
+			Duration: ptrStr(d.Duration),
+		}
 
-				metrics.DecisionsProcessed.Inc()
+		metrics.DecisionsProcessed.Inc()
 
-				log.Debug().
-					Str("ip", dec.Value).
-					Str("origin", dec.Origin).
-					Str("scenario", dec.Scenario).
-					Str("scope", dec.Scope).
-					Msg("decision received")
+		log.Debug().
+			Str("ip", dec.Value).
+			Str("origin", dec.Origin).
+			Str("scenario", dec.Scenario).
+			Str("scope", dec.Scope).
+			Msg("decision received")
 
-				// Apply stateless pre-queue filters.
-				if reason := decision.Pipeline(b.preFilters, dec); reason != nil {
-					metrics.DecisionsSkipped.WithLabelValues(reason.Filter).Inc()
-					log.Debug().
-						Str("ip", dec.Value).
-						Str("filter", reason.Filter).
-						Str("detail", reason.Detail).
-						Msg("decision filtered (pre-queue)")
-					continue
-				}
+		// Apply stateless pre-queue filters.
+		if reason := decision.Pipeline(b.preFilters, dec); reason != nil {
+			metrics.DecisionsSkipped.WithLabelValues(reason.Filter).Inc()
+			log.Debug().
+				Str("ip", dec.Value).
+				Str("filter", reason.Filter).
+				Str("detail", reason.Detail).
+				Msg("decision filtered (pre-queue)")
+			continue
+		}
 
-				// Enqueue for concurrent processing.
-				b.pool.submit(workerJob{d: dec})
-			}
+		// Enqueue for concurrent processing.
+		if !b.pool.submit(workerJob{d: dec}) {
+			log.Warn().Str("ip", dec.Value).Msg("worker buffer full, decision dropped")
+		}
+	}
 
-			for _, d := range data.Deleted {
-				if d != nil && d.Value != nil {
-					log.Debug().Str("ip", ptrStr(d.Value)).Msg("delete decision (no action required)")
-				}
-			}
+	for _, d := range data.Deleted {
+		if d != nil && d.Value != nil {
+			log.Debug().Str("ip", ptrStr(d.Value)).Msg("delete decision (no action required)")
 		}
 	}
 }
@@ -295,23 +330,13 @@ func (b *Bouncer) pushUsageMetrics(pushCtx context.Context, payload telemetry.Me
 		return fmt.Errorf("lapi api client is not initialized")
 	}
 	apiClient := b.stream.APIClient
-	req, err := apiClient.NewRequest(http.MethodPost, apiClient.URLPrefix+"/usage-metrics", payload)
+	req, err := apiClient.PrepareRequest(pushCtx, http.MethodPost, apiClient.URLPrefix+"/usage-metrics", payload)
 	if err != nil {
 		return err
 	}
 	var out any
 	_, err = apiClient.Do(pushCtx, req, &out)
 	return err
-}
-
-// Healthy checks that all configured sinks can reach their upstream services.
-func (b *Bouncer) Healthy(ctx context.Context) error {
-	for _, s := range b.sinks {
-		if err := s.Healthy(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Close performs graceful shutdown.
@@ -451,7 +476,7 @@ func (b *Bouncer) flushRetryQueue(ctx context.Context) {
 			Scope:    "ip",
 			Value:    e.IP,
 		}
-		if !b.pool.submit(workerJob{d: d, isRetry: true}) {
+		if !b.pool.submit(workerJob{d: d, isRetry: true, attempts: e.Attempts}) {
 			metrics.DecisionsSkipped.WithLabelValues("retry_buffer_full").Inc()
 			log.Warn().Str("ip", e.IP).Msg("retry worker: pool buffer full, decision lost")
 		} else {

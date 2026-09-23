@@ -21,9 +21,6 @@ type Sink interface {
 	// Report sends a single decision to the external service.
 	Report(ctx context.Context, r *Report) error
 
-	// Healthy returns nil if the sink can reach its upstream API.
-	Healthy(ctx context.Context) error
-
 	// Close performs graceful shutdown.
 	Close() error
 }

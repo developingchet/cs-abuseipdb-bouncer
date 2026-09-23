@@ -41,22 +41,22 @@ All three must be set and non-empty. `CROWDSEC_LAPI_URL` must include the scheme
 
 ### LAPI connection refused at startup
 
-**Symptom:** Container starts but immediately shows a connection error.
+**Symptom:** The container stays up but logs LAPI connection errors every 10 seconds, and turns `unhealthy` about two minutes after start.
 
 ```json
-{"level":"error","error":"dial tcp: connect: connection refused","msg":"bouncer init failed"}
+{"level":"error","component":"lapi-client","message":"failed to connect to LAPI, retrying in 10s: Get \"http://crowdsec:8080/v1/decisions/stream?...\": dial tcp 172.18.0.2:8080: connect: connection refused"}
 ```
 
-**Cause:** The LAPI URL is unreachable from inside the container.
+**Cause:** The LAPI URL is unreachable from inside the container (or CrowdSec is still starting — the bouncer keeps retrying until it comes up).
 
 **Fix:**
 1. Verify the LAPI URL is correct: `CROWDSEC_LAPI_URL=http://crowdsec:8080`
 2. Verify the bouncer is on the same Docker network as CrowdSec
-3. Test connectivity from within the container:
+3. Ask the bouncer for its status:
 
 ```bash
-# For HTTP LAPI
 docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
+# {"status":"unhealthy","reason":"no successful LAPI pull since startup 3m10s ago",...}
 ```
 
 ### Volume permission denied at startup
@@ -149,36 +149,28 @@ docker compose up -d --force-recreate abuseipdb-bouncer
 docker logs -f abuseipdb-bouncer
 ```
 
-Look for `"msg":"decision filtered"` log lines. The `filter` field identifies which step rejected the decision:
+Look for `"message":"decision filtered (pre-queue)"` and `"decision filtered (cooldown|quota)"` log lines. The `filter` field (and the `filter` label on `cs_abuseipdb_decisions_skipped_total`) identifies which step rejected the decision:
 
 | filter | Cause | Fix |
 |--------|-------|-----|
 | `action` | Decision has action=del (delete event) | Normal -- delete events are not reported |
-| `scenario-exclude` | impossible-travel scenario | Expected -- these detect account compromise, not IP abuse |
+| `scenario_exclude` | impossible-travel scenario | Expected -- these detect account compromise, not IP abuse |
 | `origin` | CAPI or lists origin | Expected -- community blocklist IPs are not re-reported |
 | `scope` | Range, ASN, or country scope | AbuseIPDB only accepts single IPs |
 | `value` | Empty IP value | Indicates a malformed decision in CrowdSec |
-| `private-ip` | Private/reserved IP range | Expected -- private IPs are not reported |
+| `private_ip` | Private/reserved IP range | Expected -- private IPs are not reported |
 | `whitelist` | IP is in `IP_WHITELIST` | Expected — trusted range you configured |
-| `min-duration` | Decision duration is below ABUSEIPDB_MIN_DURATION | Lower or disable ABUSEIPDB_MIN_DURATION |
+| `min_duration` | Decision duration is below ABUSEIPDB_MIN_DURATION | Lower or disable ABUSEIPDB_MIN_DURATION |
 | `quota` | Daily limit reached | Wait for UTC midnight reset or increase ABUSEIPDB_DAILY_LIMIT |
 | `cooldown` | IP was reported within the cooldown window | Normal -- prevents duplicate reports |
+| `duplicate` | AbuseIPDB rejected a repeat report within its 15-minute window | Normal; keep `COOLDOWN_DURATION` ≥ 15m to avoid the wasted call |
+| `rejected` | AbuseIPDB returned 422 (invalid parameters) | Check the `detail` in the error log line |
+| `retry_exhausted` | Report failed 6 times in a row | Check AbuseIPDB reachability / API key |
+| `buffer_full` | Worker queue full during a burst | Increase `WORKER_BUFFER` or `WORKER_COUNT` |
 
 ### Decisions are within the cooldown window
 
-If an IP is being repeatedly detected, the first detection is reported and subsequent ones are suppressed until the cooldown expires.
-
-```bash
-# Check cooldown file for a specific IP
-docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine \
-  cat /state/cooldown/203_0_113_42
-```
-
-The file contains a Unix timestamp (seconds since epoch). Convert it:
-
-```bash
-date -d @<timestamp>
-```
+If an IP is being repeatedly detected, the first detection is reported and subsequent ones are suppressed until the cooldown expires. Cooldowns live in the `cooldown` bucket of `state.db`. Enable `LOG_LEVEL=debug` to see `decision filtered (cooldown)` lines rather than inspecting the database: `state.db` cannot be opened while the bouncer is running (bbolt holds an exclusive lock).
 
 ---
 
@@ -189,8 +181,11 @@ date -d @<timestamp>
 **Symptom:**
 
 ```json
-{"level":"error","error":"unauthorized (401)","ip":"203.0.113.42","msg":"report failed"}
+{"level":"error","message":"401 unauthorized -- verify ABUSEIPDB_API_KEY"}
+{"level":"error","error":"unauthorized: upstream rejected the API key (401)","sink":"abuseipdb","ip":"203.0.113.42","message":"report failed"}
 ```
+
+After 5 consecutive failures `/healthz` reports unhealthy. Affected decisions are kept in the retry queue (up to 6 attempts with backoff), so reports resume once the key is fixed and the container restarted.
 
 **Cause:** The `ABUSEIPDB_API_KEY` value is invalid or the key has been revoked.
 
@@ -209,7 +204,7 @@ If this returns HTTP 401, the key is invalid. Generate a new one and update `.en
 
 ### CrowdSec LAPI returns 401
 
-**Symptom:** Bouncer logs show LAPI authentication failure at startup.
+**Symptom:** Bouncer logs show repeated `"component":"lapi-client"` errors mentioning 403/401, and the container turns unhealthy.
 
 **Cause:** The `CROWDSEC_LAPI_KEY` has been deleted from CrowdSec.
 
@@ -237,10 +232,14 @@ docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 **Symptom:**
 
 ```json
-{"level":"warn","sleep":86400,"msg":"rate-limited -- check daily quota at abuseipdb.com/account"}
+{"level":"warn","ip":"203.0.113.42","retry_after":3600000,"detail":"Daily rate limit of 1000 requests exceeded for this endpoint. See headers for additional details.","message":"rate-limited -- decision queued for retry"}
 ```
 
 **Cause:** The daily report quota is exhausted. AbuseIPDB enforces this hard limit per API key per day.
+
+**What the bouncer does:** the decision is persisted to the retry queue and resent after the `Retry-After` / `X-RateLimit-Reset` time AbuseIPDB returns. Rate limits do not make the container unhealthy.
+
+A 429 whose detail says *"You can only report the same IP address … once in 15 minutes"* is a duplicate, not a quota problem; it is dropped (`filter="duplicate"`) and logged at debug level only.
 
 **Fix:**
 - Wait for the quota to reset. AbuseIPDB resets quotas at 00:00 UTC.
@@ -255,40 +254,32 @@ docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 
 **Symptom:** Bouncer appears to be at quota limit even after midnight UTC.
 
-**Cause:** The state volume is not mounted, so the counter file is not writable or not accessible.
+**Cause:** The quota record (`quota` bucket in `state.db`) stores its UTC date and resets itself on the first report of a new UTC day. A stuck counter usually means you are comparing against AbuseIPDB's own counter, or the host clock is wrong.
 
-**Fix:**
-
-```bash
-# Check volume mount
-docker inspect abuseipdb-bouncer | jq -r '.[0].Mounts'
-
-# Check the daily file
-docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine cat /state/daily
-```
-
-The file format is `"<count> <YYYY-MM-DD>"`. If the date is stale, the bouncer should have reset it automatically on startup. If the file is corrupt, delete it:
+**Check:**
 
 ```bash
-docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine rm /state/daily
-docker compose restart abuseipdb-bouncer
+curl -s http://127.0.0.1:9090/metrics | grep cs_abuseipdb_quota_remaining
+date -u   # host clock
 ```
 
-### Cooldown files not pruned
-
-**Symptom:** The cooldown directory grows without bound.
-
-**Cause:** The bouncer prunes cooldown files every 200 decisions and on graceful shutdown. If the container is killed (not stopped) frequently, pruning may not run.
-
-**Fix:** Prune manually:
+**Reset all state (last resort):** stop the bouncer first — `state.db` is exclusively locked while it runs — then remove the volume:
 
 ```bash
-# Delete all expired cooldown files
-docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine \
-  find /state/cooldown -type f -delete
+docker compose stop abuseipdb-bouncer
+docker volume rm cs-abuseipdb-bouncer_bouncer-state
+docker compose up -d abuseipdb-bouncer
 ```
 
-Then restart the bouncer normally. Active cooldowns will be re-established on the next report.
+This clears the quota counter, all cooldowns and the retry queue.
+
+### state.db keeps growing
+
+**Symptom:** `cs_abuseipdb_bbolt_db_size_bytes` rises steadily.
+
+**Cause:** The janitor prunes expired cooldowns and stale retry entries every `JANITOR_INTERVAL` (default 5m); bbolt reuses freed pages but does not shrink the file. Steady growth usually means a very long `COOLDOWN_DURATION` with many distinct IPs, or a large retry queue (`cs_abuseipdb_retry_queue_size`) during a long AbuseIPDB outage.
+
+**Fix:** Check the retry queue size and AbuseIPDB connectivity first. To reclaim disk space, reset the volume as described above.
 
 ---
 
@@ -311,14 +302,30 @@ If the test fails, the issue is with the host's outbound network, firewall rules
 
 ### Cannot reach CrowdSec LAPI
 
-**Test:** Use the built-in healthcheck subcommand:
+**Test:** Use the built-in healthcheck subcommand, which asks the running bouncer (via `/healthz`) when it last polled LAPI successfully:
 
 ```bash
 docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
 echo "Exit: $?"
 ```
 
-Exit 0 means connectivity is working. Exit non-zero means the LAPI is unreachable or the API key is invalid.
+Exit 0 prints `{"status":"ok","last_lapi_pull":...}`. A non-zero exit prints the reason, e.g. `last successful LAPI pull was 6m0s ago`; the matching errors are in `docker logs` with `"component":"lapi-client"`. You can also check `cscli bouncers list` on the CrowdSec side (`last_pull` column).
+
+### Container shows `unhealthy`
+
+The Docker `HEALTHCHECK` calls `bouncer healthcheck`, which GETs `/healthz` on `METRICS_ADDR`. See why:
+
+```bash
+docker inspect --format '{{json .State.Health}}' abuseipdb-bouncer | jq '.Log[-1].Output'
+```
+
+| Output contains | Meaning |
+|-----------------|---------|
+| `no successful LAPI pull since startup` / `last successful LAPI pull was` | LAPI unreachable or key rejected — see above |
+| `last 5 AbuseIPDB calls failed` | Network/TLS problem reaching api.abuseipdb.com, AbuseIPDB 5xx, or invalid API key (401) |
+| `healthcheck needs the metrics/health server` | `METRICS_ENABLED=false` or `METRICS_ADDR` empty — re-enable it or disable the container healthcheck |
+| `connection refused` | The HTTP server could not bind `METRICS_ADDR` (check logs for `metrics server error`) |
+| `storage: open /data/state.db: timeout` | You are running an image older than this fix; the old healthcheck opened the locked database. Upgrade. |
 
 ---
 
@@ -357,12 +364,14 @@ docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "debug 
 docker logs -f abuseipdb-bouncer | grep 203.0.113.42
 ```
 
-**5. Test connectivity from the bouncer:**
+**5. Ask the bouncer for its health status:**
 
 ```bash
 docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
 echo "Healthcheck exit code: $?"
 ```
+
+The JSON output shows the last successful LAPI pull, the last good AbuseIPDB call, and the consecutive AbuseIPDB failure count.
 
 **6. Run the binary version check:**
 

@@ -23,9 +23,11 @@ type Store interface {
 	// single bolt.Update. Returns (true, nil) if allowed, (false, nil) if active.
 	CooldownConsume(ip string) (bool, error)
 
-	// RetryEnqueue persists a rate-limited decision for later retry.
-	// retryAfter is the wall-clock time after which the decision may be retried.
-	RetryEnqueue(ip, scenario string, retryAfter time.Time) error
+	// RetryEnqueue persists a failed decision for later retry, replacing any
+	// existing entry for ip. retryAfter is the wall-clock time after which the
+	// decision may be retried; attempts is the number of delivery attempts
+	// already made, so callers can cap retries across dequeue cycles.
+	RetryEnqueue(ip, scenario string, retryAfter time.Time, attempts int) error
 
 	// RetryDequeue returns up to limit entries whose retryAfter <= now.
 	RetryDequeue(now time.Time, limit int) ([]RetryRecord, error)

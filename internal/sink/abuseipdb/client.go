@@ -36,6 +36,7 @@ const (
 	defaultInitialBackoff = 5 * time.Second
 	httpResponseBufSize   = 4096
 	defaultRetryAfterSecs = 60
+	maxRetryAfter         = 24 * time.Hour
 )
 
 // ClientConfig holds configuration for the AbuseIPDB client.
@@ -148,7 +149,7 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 	backoff := c.initialBackoff
 
 	for attempt := 1; attempt <= c.maxRetries; attempt++ {
-		code, body, err := c.doReport(ctx, ip, categories, comment)
+		code, header, body, err := c.doReport(ctx, ip, categories, comment)
 		if err != nil {
 			// Distinguish context deadline exceeded from other network errors.
 			if ctx.Err() != nil {
@@ -176,24 +177,33 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 		case http.StatusOK:
 			return nil
 
-		case 422:
+		case http.StatusUnprocessableEntity:
+			// 422 is AbuseIPDB's validation error (malformed IP, bad
+			// categories). Resending the same payload cannot succeed.
+			metrics.APIErrors.WithLabelValues("validation").Inc()
 			detail := extractErrorDetail(body)
-			log.Debug().Str("ip", ip).Str("detail", detail).Msg("skip duplicate/invalid")
-			return nil // Not an error; the IP was already reported or is whitelisted
+			log.Error().Str("ip", ip).Str("detail", detail).Msg("report rejected as invalid (422)")
+			return sink.ErrPermanent{Err: fmt.Errorf("invalid report parameters (422): %s", detail)}
 
 		case http.StatusTooManyRequests:
+			detail := extractErrorDetail(body)
+			if isDuplicateReport(detail) {
+				log.Debug().Str("ip", ip).Str("detail", detail).Msg("skip duplicate (reported within the last 15 minutes)")
+				return sink.ErrDuplicate
+			}
 			metrics.APIErrors.WithLabelValues("rate_limit").Inc()
-			waitSec := extractRetryAfter(body)
+			wait := retryAfter(header, body, time.Now())
 			log.Warn().
 				Str("ip", ip).
-				Int("retry_after_sec", waitSec).
+				Dur("retry_after", wait).
+				Str("detail", detail).
 				Msg("rate-limited -- decision queued for retry")
-			return sink.ErrRateLimit{RetryAfter: time.Duration(waitSec) * time.Second}
+			return sink.ErrRateLimit{RetryAfter: wait}
 
 		case http.StatusUnauthorized:
 			metrics.APIErrors.WithLabelValues("auth").Inc()
 			log.Error().Msg("401 unauthorized -- verify ABUSEIPDB_API_KEY")
-			return fmt.Errorf("unauthorized (401)")
+			return fmt.Errorf("%w (401)", sink.ErrUnauthorized)
 
 		default:
 			log.Warn().Int("http", code).Str("ip", ip).Msg("unexpected response")
@@ -217,7 +227,7 @@ func (c *Client) reportWithRetry(ctx context.Context, ip, categories, comment st
 	return fmt.Errorf("all %d attempts exhausted for ip=%s", c.maxRetries, ip)
 }
 
-func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (int, []byte, error) {
+func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (int, http.Header, []byte, error) {
 	form := url.Values{
 		"ip":         {ip},
 		"categories": {categories},
@@ -230,7 +240,7 @@ func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.reportURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 
 	req.Header.Set("Key", c.apiKey)
@@ -239,7 +249,7 @@ func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 
@@ -249,7 +259,7 @@ func (c *Client) doReport(ctx context.Context, ip, categories, comment string) (
 	_, _ = io.Copy(buf, io.LimitReader(resp.Body, httpResponseBufSize))
 	body := make([]byte, buf.Len())
 	copy(body, buf.Bytes())
-	return resp.StatusCode, body, nil
+	return resp.StatusCode, resp.Header, body, nil
 }
 
 func (c *Client) checkWhitelisted(ctx context.Context, ip string) (bool, error) {
@@ -278,6 +288,12 @@ func (c *Client) checkWhitelisted(ctx context.Context, ip string) (bool, error) 
 	body := make([]byte, buf.Len())
 	copy(body, buf.Bytes())
 
+	if resp.StatusCode != http.StatusOK {
+		// /check has its own daily quota; a 429 here must not be read as
+		// "not whitelisted" without telling the operator.
+		return false, fmt.Errorf("check returned http %d: %s", resp.StatusCode, extractErrorDetail(body))
+	}
+
 	var result struct {
 		Data struct {
 			IsWhitelisted bool `json:"isWhitelisted"`
@@ -288,30 +304,6 @@ func (c *Client) checkWhitelisted(ctx context.Context, ip string) (bool, error) 
 	}
 
 	return result.Data.IsWhitelisted, nil
-}
-
-// Healthy checks API reachability (does not consume quota).
-func (c *Client) Healthy(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.checkURL+"?ipAddress=127.0.0.1&maxAgeInDays=1", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Key", c.apiKey)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("abuseipdb unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("abuseipdb: invalid API key (401)")
-	}
-	return nil
 }
 
 func (c *Client) Close() error { return nil }
@@ -369,20 +361,43 @@ func formatCategories(cats []int) string {
 	return strings.Join(parts, ",")
 }
 
-// retryAfterRegex extracts the seconds from AbuseIPDB rate-limit messages such as
+// retryAfterRegex extracts the seconds from rate-limit messages such as
 // "Try again in 42 seconds." Matching on "in N second" avoids false-positives
 // from other numbers in the message (e.g. "rate limit of 1000 requests").
 var retryAfterRegex = regexp.MustCompile(`\bin\s+(\d+)\s+second`)
 
+// retryAfter determines how long to wait after a 429. AbuseIPDB documents a
+// Retry-After header (seconds) and X-RateLimit-Reset (epoch seconds of the
+// daily reset); the message body is only a last resort. The result is capped
+// at maxRetryAfter.
+func retryAfter(h http.Header, body []byte, now time.Time) time.Duration {
+	wait := time.Duration(defaultRetryAfterSecs) * time.Second
+	if secs, err := strconv.ParseInt(strings.TrimSpace(h.Get("Retry-After")), 10, 64); err == nil && secs > 0 {
+		wait = time.Duration(secs) * time.Second
+	} else if reset, err := strconv.ParseInt(strings.TrimSpace(h.Get("X-RateLimit-Reset")), 10, 64); err == nil && reset > now.Unix() {
+		wait = time.Unix(reset, 0).Sub(now)
+	} else if n := extractRetryAfter(body); n > 0 {
+		wait = time.Duration(n) * time.Second
+	}
+	return min(wait, maxRetryAfter)
+}
+
+// extractRetryAfter returns the "in N seconds" value from the error detail,
+// or 0 when the message carries no such hint.
 func extractRetryAfter(body []byte) int {
-	detail := extractErrorDetail(body)
-	match := retryAfterRegex.FindStringSubmatch(detail)
+	match := retryAfterRegex.FindStringSubmatch(extractErrorDetail(body))
 	if len(match) >= 2 {
 		if n, err := strconv.Atoi(match[1]); err == nil && n > 0 {
 			return n
 		}
 	}
-	return defaultRetryAfterSecs
+	return 0
+}
+
+// isDuplicateReport reports whether a 429 detail is AbuseIPDB's per-IP
+// 15-minute duplicate rejection rather than an account rate limit.
+func isDuplicateReport(detail string) bool {
+	return strings.Contains(strings.ToLower(detail), "same ip address")
 }
 
 func extractErrorDetail(body []byte) string {

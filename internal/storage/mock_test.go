@@ -164,7 +164,7 @@ func TestMemStore_Retry_EnqueueDequeue(t *testing.T) {
 	m := NewMemStore(1000, time.Minute)
 	past := time.Now().Add(-time.Second)
 
-	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestMemStore_Retry_IgnoresFutureEntries(t *testing.T) {
 	m := NewMemStore(1000, time.Minute)
 	future := time.Now().Add(time.Hour)
 
-	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future); err != nil {
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestMemStore_Retry_Delete(t *testing.T) {
 	m := NewMemStore(1000, time.Minute)
 	past := time.Now().Add(-time.Second)
 
-	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past); err != nil {
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 	records, err := m.RetryDequeue(time.Now(), 10)
@@ -242,10 +242,10 @@ func TestMemStore_Retry_Count(t *testing.T) {
 		t.Fatalf("expected count=0, got %d", count)
 	}
 
-	if err := m.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(time.Hour)); err != nil {
+	if err := m.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(time.Hour), 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
-	if err := m.RetryEnqueue("10.0.0.2", "s2", time.Now().Add(time.Hour)); err != nil {
+	if err := m.RetryEnqueue("10.0.0.2", "s2", time.Now().Add(time.Hour), 1); err != nil {
 		t.Fatalf("RetryEnqueue: %v", err)
 	}
 
@@ -263,13 +263,13 @@ func TestMemStore_RetryPrune(t *testing.T) {
 
 	// Enqueue a very old entry (to be pruned).
 	veryOld := time.Now().Add(-25 * time.Hour)
-	if err := m.RetryEnqueue("10.0.0.1", "s1", veryOld); err != nil {
+	if err := m.RetryEnqueue("10.0.0.1", "s1", veryOld, 1); err != nil {
 		t.Fatalf("RetryEnqueue old: %v", err)
 	}
 
 	// Enqueue a recent entry (not pruned).
 	recent := time.Now().Add(-time.Hour)
-	if err := m.RetryEnqueue("10.0.0.2", "s2", recent); err != nil {
+	if err := m.RetryEnqueue("10.0.0.2", "s2", recent, 1); err != nil {
 		t.Fatalf("RetryEnqueue recent: %v", err)
 	}
 
@@ -293,7 +293,7 @@ func TestMemStore_RetryDequeue_LimitExceeded(t *testing.T) {
 	// Enqueue 5 distinct past-due entries.
 	for i := 1; i <= 5; i++ {
 		ip := fmt.Sprintf("10.0.0.%d", i)
-		if err := m.RetryEnqueue(ip, "s", past); err != nil {
+		if err := m.RetryEnqueue(ip, "s", past, 1); err != nil {
 			t.Fatalf("RetryEnqueue %s: %v", ip, err)
 		}
 	}
@@ -308,14 +308,14 @@ func TestMemStore_RetryDequeue_LimitExceeded(t *testing.T) {
 	}
 }
 
-func TestMemStore_Retry_IncrementAttempts(t *testing.T) {
+func TestMemStore_Retry_ReplacesEntryWithCallerAttempts(t *testing.T) {
 	m := NewMemStore(1000, time.Minute)
 	retryAt := time.Now().Add(-time.Second)
 
-	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt); err != nil {
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt, 1); err != nil {
 		t.Fatalf("RetryEnqueue #1: %v", err)
 	}
-	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt); err != nil {
+	if err := m.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt, 2); err != nil {
 		t.Fatalf("RetryEnqueue #2: %v", err)
 	}
 

@@ -112,10 +112,10 @@ When `true`, each IP is queried via `/check` before calling `/report`. If AbuseI
 
 **Trade-offs:**
 - Prevents wasting report quota on whitelisted IPs (CDNs, search engines, trusted infrastructure)
-- Each precheck consumes one `/check` API call from the same daily quota
+- Each precheck consumes one call from the separate `/check` daily quota (1,000/day on the free tier, 3,000 Webmaster, 5,000 Supporter, 10,000 Basic, 50,000 Premium). If `/check` fails or is rate-limited, a warning is logged and the report proceeds without the precheck.
 - Adds approximately 100–300 ms latency per decision (one additional round trip)
 
-Recommended for Webmaster and Premium tiers where check quota is less constrained.
+Recommended for tiers where check quota comfortably exceeds your report volume.
 
 #### ABUSEIPDB_MIN_DURATION
 
@@ -130,6 +130,8 @@ Skip decisions shorter than this duration. The decision's `duration` field is pa
 | `300` or `5m` | Skip bans shorter than 5 minutes (typical test decisions) |
 | `3600` or `1h` | Report only bans of 1 hour or longer |
 | `86400` or `24h` | Report only bans of 24 hours or longer |
+
+Invalid or negative values are rejected at startup with a configuration error.
 
 #### IP_WHITELIST
 
@@ -190,6 +192,10 @@ Set to `false` to disable the built-in HTTP server entirely. No port is opened a
 `/metrics`, `/healthz`, and `/readyz` endpoints are unavailable. This takes precedence
 over `METRICS_ADDR` — even if an address is configured, the server will not start.
 
+The image's Docker `HEALTHCHECK` (`bouncer healthcheck`) queries `/healthz`, so with the
+server disabled it always reports unhealthy. Disable the check in that case
+(`healthcheck: { disable: true }` in Compose, or `--no-healthcheck` with `docker run`).
+
 #### METRICS_ADDR
 
 **Type:** String (host:port)
@@ -200,12 +206,20 @@ Address on which the built-in HTTP server listens for Prometheus metrics and Kub
 | Endpoint | Description |
 |----------|-------------|
 | `GET /metrics` | Prometheus metrics in text exposition format |
-| `GET /healthz` | Liveness probe — `ok` (HTTP 200) when the process is running |
-| `GET /readyz` | Readiness probe — HTTP 200 when connected to LAPI, 503 otherwise |
+| `GET /healthz` | Liveness — 200 while the last successful LAPI pull is within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls have failed (network errors, 5xx, 401); 503 otherwise. A 2-minute startup grace applies before the first pull. |
+| `GET /readyz` | Readiness — as `/healthz`, and 503 until the first successful LAPI pull |
 
-Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no port is opened).
+Both health endpoints answer from in-process state with a JSON body, for example:
 
-**Security note:** Bind to `127.0.0.1:9090` or a private network interface if the metrics endpoint should not be reachable from outside the host.
+```json
+{"status":"ok","last_lapi_pull":"2026-09-23T12:00:04Z","last_abuseipdb_ok":"2026-09-23T11:58:31Z","consecutive_abuseipdb_failures":0}
+```
+
+They never open `state.db` (the running bouncer holds an exclusive bbolt lock on it) and never call AbuseIPDB, so probing them costs no API quota. AbuseIPDB rate limits (429) and duplicate-report rejections do not count as failures: they prove the API is reachable and the key is accepted.
+
+Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no port is opened). The `bouncer healthcheck` subcommand derives its probe URL from this value (`:9090` / `0.0.0.0:9090` → `http://127.0.0.1:9090/healthz`).
+
+**Security note:** The endpoints are unauthenticated. The default `:9090` listens on all interfaces inside the container; publish it only to `127.0.0.1` (as the bundled `docker-compose.yml` does) or a private network.
 
 #### Usage Metrics Telemetry
 
@@ -250,7 +264,7 @@ log_level: info
 
 Per-IP suppression window. After a report is sent for an IP, subsequent decisions for that IP are silently dropped until this window expires.
 
-The default matches AbuseIPDB's server-side deduplication window (15 minutes). Reports within that window return HTTP 422 and consume quota without effect. Cooldown state is stored atomically in bbolt (`CooldownConsume` is a single serialised transaction) — concurrent workers cannot double-report the same IP.
+The default matches AbuseIPDB's server-side deduplication window (15 minutes). AbuseIPDB rejects a second report of the same IP within that window with HTTP 429 ("You can only report the same IP address … once in 15 minutes"); the bouncer recognises this as a duplicate and drops it without retrying (`cs_abuseipdb_decisions_skipped_total{filter="duplicate"}`). Values below 15m therefore only produce extra rejected calls. Cooldown state is stored atomically in bbolt (`CooldownConsume` is a single serialised transaction) — concurrent workers cannot double-report the same IP.
 
 Expired entries are pruned from `state.db` by the background janitor (see `JANITOR_INTERVAL`).
 
@@ -296,7 +310,9 @@ Output format for log messages.
 12:15:30 INF reported ip=203.0.113.42 sink=abuseipdb daily=15 limit=1000
 ```
 
-In both formats, API keys and Bearer tokens are automatically redacted from all log lines by the built-in `RedactWriter`.
+In both formats, AbuseIPDB API keys, Bearer tokens and `X-Api-Key` header values are automatically redacted from all log lines by the built-in `RedactWriter`.
+
+Log lines from the CrowdSec client library (LAPI connection and poll errors) are forwarded into the same stream with `"component":"lapi-client"`. They are capped at `info` regardless of `LOG_LEVEL`, because the library's debug/trace output dumps full HTTP requests including the LAPI key.
 
 #### TLS_SKIP_VERIFY
 
@@ -339,9 +355,9 @@ Increasing this value helps during high-frequency ban waves (e.g. a DDoS generat
 **Default:** `256`
 **Range:** 1–10000
 
-Size of the in-memory job queue between the event loop and the worker pool. If new decisions arrive faster than workers can dispatch them, the queue absorbs the burst. When the queue is full, excess decisions are dropped immediately and counted in the `cs_abuseipdb_decisions_skipped_total{filter="buffer-full"}` metric.
+Size of the in-memory job queue between the event loop and the worker pool. If new decisions arrive faster than workers can dispatch them, the queue absorbs the burst. When the queue is full, excess decisions are dropped immediately and counted in the `cs_abuseipdb_decisions_skipped_total{filter="buffer_full"}` metric.
 
-Increase this value if you observe frequent `buffer-full` drops during burst traffic and cannot increase `WORKER_COUNT` further (e.g. due to AbuseIPDB rate limits).
+Increase this value if you observe frequent `buffer_full` drops during burst traffic and cannot increase `WORKER_COUNT` further (e.g. due to AbuseIPDB rate limits).
 
 #### JANITOR_INTERVAL
 
@@ -352,7 +368,8 @@ Increase this value if you observe frequent `buffer-full` drops during burst tra
 How often the background janitor goroutine runs. On each tick the janitor:
 
 1. Calls `CooldownPrune()` to delete expired cooldown entries from `state.db`, bounding database growth
-2. Updates the `cs_abuseipdb_bbolt_db_size_bytes` Prometheus gauge with the current file size
+2. Calls `RetryPrune()` to delete retry-queue entries that became due more than 24 hours ago
+3. Updates the `cs_abuseipdb_bbolt_db_size_bytes`, `cs_abuseipdb_retry_queue_size` and `cs_abuseipdb_quota_remaining` gauges
 
 Values below 30 s are rejected at startup. The default of 5 minutes is appropriate for all deployments.
 
@@ -362,7 +379,15 @@ Values below 30 s are rejected at startup. The default of 5 minutes is appropria
 **Default:** `30s`
 **Minimum:** `10s`
 
-How often the background retry worker checks the retry queue for rate-limited decisions that are ready to be retried. When AbuseIPDB returns HTTP 429 (rate limited), the decision is persisted to `state.db` and retried after the interval indicated by the `Retry-After` response header.
+How often the background retry worker checks the persistent retry queue (in `state.db`) for decisions that are due. A decision is queued when:
+
+| Outcome | Retry delay |
+|---------|-------------|
+| HTTP 429 rate limit | `Retry-After` header (seconds); otherwise until `X-RateLimit-Reset`; otherwise 60 s (capped at 24 h) |
+| Network error, timeout, 5xx after the client's 3 in-line attempts, 401 | 1 m, doubling per attempt, capped at 30 m |
+| Interrupted by shutdown | 10 s after the next start |
+
+Each decision is attempted at most 6 times in total, then dropped (`cs_abuseipdb_decisions_skipped_total{filter="retry_exhausted"}`). Duplicate-report 429s and 422 validation errors are never retried. Retries do not consume the local daily quota or cooldown again — those were charged on the first attempt.
 
 Values below 10 s are rejected at startup. The default of 30 s is appropriate for all deployments.
 

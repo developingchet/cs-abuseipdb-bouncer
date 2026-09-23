@@ -173,7 +173,7 @@ Expected output:
 
 ```
 [+] Building X.Xs (8/8) FINISHED
- => [builder 1/5] FROM docker.io/library/golang:1.23-alpine
+ => [builder 1/5] FROM docker.io/library/golang:1.26-alpine
  => [builder 4/5] RUN go mod download
  => [builder 5/5] RUN CGO_ENABLED=0 ... go build -o /bouncer ./cmd/bouncer/
  => [stage-1 1/4] FROM gcr.io/distroless/static-debian12:nonroot
@@ -209,7 +209,7 @@ Expected output:
 docker ps | grep abuseipdb-bouncer
 ```
 
-Expected: container in "Up" state with `(healthy)` once the healthcheck passes (~15 seconds after startup).
+Expected: container in "Up" state with `(healthy)` once the healthcheck passes (~15 seconds after startup). If LAPI is unreachable the bouncer keeps retrying and turns `(unhealthy)` after about two minutes.
 
 **Check startup logs:**
 
@@ -271,13 +271,16 @@ docker exec crowdsec cscli decisions delete -i 203.0.113.42
 
 ### Health Check
 
-The container has a built-in healthcheck that runs `bouncer healthcheck` every 30 seconds. This performs a lightweight connectivity check against the AbuseIPDB API.
+The container has a built-in healthcheck that runs `bouncer healthcheck` every 30 seconds. It asks the running bouncer's `/healthz` endpoint (on `METRICS_ADDR`) whether LAPI has been polled successfully recently and whether AbuseIPDB calls are succeeding. It does not open `state.db` and does not spend AbuseIPDB quota.
 
 ```bash
 docker inspect abuseipdb-bouncer | jq -r '.[0].State.Health.Status'
+docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck   # prints the JSON status
 ```
 
-Expected: `healthy`
+Expected: `healthy`, and `{"status":"ok","last_lapi_pull":"…",…}`.
+
+The healthcheck requires the HTTP server (`METRICS_ENABLED=true`, the default). If you disable it, also disable the container healthcheck (`healthcheck: { disable: true }`).
 
 ### State Persistence
 

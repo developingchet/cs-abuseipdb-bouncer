@@ -8,9 +8,10 @@ A production-ready, security-hardened CrowdSec bouncer that reports malicious IP
 
 | Feature | Detail |
 |---------|--------|
-| **Concurrent Worker Pool** | A configurable pool of goroutines sends reports to AbuseIPDB in parallel. High-frequency ban waves no longer stall the main event loop. Backpressure is handled via a bounded channel; overflow is counted in the `buffer-full` filter metric. |
+| **Concurrent Worker Pool** | A configurable pool of goroutines sends reports to AbuseIPDB in parallel. High-frequency ban waves no longer stall the main event loop. Backpressure is handled via a bounded channel; overflow is counted in the `buffer_full` filter metric. Failed reports (network errors, 5xx, 429) are persisted and retried, honouring AbuseIPDB's `Retry-After` header. |
 | **ACID State** | Per-IP cooldown and daily quota are stored in a [bbolt](https://github.com/etcd-io/bbolt) embedded database (`state.db`). Quota and cooldown checks execute as single atomic transactions — no TOCTOU races, crash-consistent, survives container restarts. |
-| **Prometheus Metrics** | Six metrics are exported on `GET /metrics` (port 9090 by default): decisions processed, reports sent, decisions skipped (by filter), API errors (by type), daily quota remaining, and `state.db` file size. Ready for Grafana / Alertmanager. |
+| **Prometheus Metrics** | Eleven metrics are exported on `GET /metrics` (port 9090 by default): decisions processed, reports sent, decisions skipped (by filter), API errors (by type), daily quota remaining, `state.db` file size, retry-queue size / enqueues / attempts, and last-successful LAPI pull / AbuseIPDB report timestamps. Ready for Grafana / Alertmanager. |
+| **Honest Health Checks** | `/healthz` and `/readyz` reflect the last successful LAPI pull and AbuseIPDB call. The Docker `HEALTHCHECK` queries them over HTTP — it never touches `state.db` and never spends API quota. |
 | **Distroless Security** | The runtime image is `gcr.io/distroless/static-debian12:nonroot`. No shell, no package manager, no libc. Runs as UID 65532 with zero Linux capabilities and a read-only filesystem. Seccomp syscall allowlist applied by default in the provided `docker-compose.yml`. |
 | **Supply-Chain Provenance** | Every release is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC — no stored private key) and accompanied by a CycloneDX SBOM attached as a Cosign attestation and a GitHub Release asset. |
 | **Multi-Architecture** | Pre-built images for `linux/amd64` and `linux/arm64` on Docker Hub. Static Go binary — no libc, no CGO. |
@@ -71,11 +72,11 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_DIR` | `/data` | Directory for `state.db` (bbolt database). Mount a named volume here. |
-| `METRICS_ENABLED` | `true` | Set to `false` to disable the `/metrics`, `/healthz`, `/readyz` HTTP server entirely (no port opened). Takes precedence over `METRICS_ADDR`. |
+| `METRICS_ENABLED` | `true` | Set to `false` to disable the `/metrics`, `/healthz`, `/readyz` HTTP server entirely (no port opened). Takes precedence over `METRICS_ADDR`. The image `HEALTHCHECK` needs this server — disable the healthcheck too if you turn it off. |
 | `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. Ignored when `METRICS_ENABLED=false`. Set to empty string to disable. |
 | `CONFIG_FILE` | _(none)_ | Optional path to a YAML config file (alternative / supplement to env vars). |
 | `ABUSEIPDB_DAILY_LIMIT` | `1000` | Daily report quota (free=1000, webmaster=3000, premium=50000). |
-| `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs). Uses one extra API call per decision. |
+| `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs). Uses one call from the separate `/check` daily quota per decision. |
 | `ABUSEIPDB_MIN_DURATION` | `0` | Skip decisions shorter than N seconds (e.g. `300` ignores 5-minute test bans). |
 | `IP_WHITELIST` | _(none)_ | Comma-separated IPs/CIDRs to skip reporting (e.g. `203.0.113.0/24,2001:db8::/32`). |
 | `COOLDOWN_DURATION` | `15m` | Per-IP cooldown matching AbuseIPDB's deduplication window. |
@@ -87,7 +88,7 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `WORKER_COUNT` | `4` | Number of goroutines that concurrently send reports to AbuseIPDB (range: 1–64). |
 | `WORKER_BUFFER` | `256` | Size of the in-memory job queue between the event loop and workers (range: 1–10000). |
 | `JANITOR_INTERVAL` | `5m` | How often the background janitor prunes expired cooldown entries and updates the DB size metric (minimum: 30s). |
-| `RETRY_CHECK_INTERVAL` | `30s` | How often to check the retry queue for rate-limited decisions ready to resend (minimum: 10s). |
+| `RETRY_CHECK_INTERVAL` | `30s` | How often to check the retry queue for failed / rate-limited decisions ready to resend (minimum: 10s). |
 | `USAGE_METRICS_ENABLED` | `true` | Enable/disable periodic LAPI telemetry push (`POST /v1/usage-metrics`). |
 | `USAGE_METRICS_INTERVAL` | `30m` | Interval for LAPI telemetry push (minimum: 10m). |
 
@@ -100,8 +101,8 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | Endpoint | Description |
 |----------|-------------|
 | `GET /metrics` | Prometheus metrics in text exposition format |
-| `GET /healthz` | Liveness probe — returns `ok` (HTTP 200) when the process is running |
-| `GET /readyz` | Readiness probe — HTTP 200 when connected to LAPI, 503 otherwise |
+| `GET /healthz` | Liveness — HTTP 200 while LAPI was polled successfully within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls failed; 503 otherwise (JSON body with the reason) |
+| `GET /readyz` | Readiness — as `/healthz`, plus 503 until the first successful LAPI pull |
 
 ### Prometheus Metrics
 
@@ -109,10 +110,15 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 |--------|------|--------|-------------|
 | `cs_abuseipdb_decisions_processed_total` | Counter | — | All decisions received from the LAPI stream |
 | `cs_abuseipdb_reports_sent_total` | Counter | — | Successful reports sent to AbuseIPDB |
-| `cs_abuseipdb_decisions_skipped_total` | Counter | `filter` | Decisions dropped by each filter stage |
-| `cs_abuseipdb_api_errors_total` | Counter | `type` | API errors by type: `rate_limit`, `auth`, `network`, `timeout` |
+| `cs_abuseipdb_decisions_skipped_total` | Counter | `filter` | Decisions dropped, by filter or outcome |
+| `cs_abuseipdb_api_errors_total` | Counter | `type` | API errors by type: `rate_limit`, `auth`, `validation`, `network`, `timeout` |
 | `cs_abuseipdb_quota_remaining` | Gauge | — | Remaining daily report quota (resets at UTC midnight) |
 | `cs_abuseipdb_bbolt_db_size_bytes` | Gauge | — | Size of `state.db` in bytes, updated by the janitor |
+| `cs_abuseipdb_retry_queue_size` | Gauge | — | Decisions waiting in the persistent retry queue |
+| `cs_abuseipdb_retry_queue_enqueued_total` | Counter | — | Decisions queued for retry |
+| `cs_abuseipdb_retry_attempts_total` | Counter | — | Retry attempts submitted from the queue |
+| `cs_abuseipdb_last_lapi_pull_timestamp_seconds` | Gauge | — | Unix time of the last successful LAPI poll |
+| `cs_abuseipdb_last_report_success_timestamp_seconds` | Gauge | — | Unix time of the last successful AbuseIPDB report |
 
 Scrape example:
 ```bash
@@ -160,7 +166,7 @@ If you prefer not to download the file, simply omit that line — `cap_drop: ALL
 
 ### Log Redaction
 
-API keys and Bearer tokens are automatically redacted from all log output before they reach stderr. The regex patterns match 80-character hex strings (AbuseIPDB / CrowdSec key format) and `Bearer <token>` values.
+API keys and Bearer tokens are automatically redacted from all log output before they reach stderr. The regex patterns match 80-character hex strings (AbuseIPDB key format), `Bearer <token>` values and `X-Api-Key:` header values (CrowdSec LAPI key).
 
 ### Supply-Chain Verification
 

@@ -22,6 +22,16 @@ func TestRedactWriter_Write(t *testing.T) {
 			expected: "Authorization: bearer [REDACTED]",
 		},
 		{
+			name:     "Redact LAPI key header in a request dump",
+			input:    "GET /v1/decisions/stream HTTP/1.1\r\nX-Api-Key: s3cr3t-lapi-key\r\n",
+			expected: "GET /v1/decisions/stream HTTP/1.1\r\nX-Api-Key: [REDACTED]\r\n",
+		},
+		{
+			name:     "Redact LAPI key header inside JSON string",
+			input:    `{"message":"req: X-Api-Key: s3cr3t\r\nHost: x"}`,
+			expected: `{"message":"req: X-Api-Key: [REDACTED]\r\nHost: x"}`,
+		},
+		{
 			name:     "No Redaction Needed",
 			input:    "Bouncer started successfully",
 			expected: "Bouncer started successfully",

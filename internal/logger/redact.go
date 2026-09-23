@@ -14,6 +14,8 @@ var redactPatterns = []struct {
 	{regexp.MustCompile(`[A-Fa-f0-9]{80}`), []byte("[REDACTED-API-KEY]")},
 	// Bearer tokens in Authorization headers or log fields.
 	{regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*`), []byte("bearer [REDACTED]")},
+	// CrowdSec LAPI bouncer keys in dumped request headers.
+	{regexp.MustCompile(`(?i)x-api-key:\s*[^\s"\\]+`), []byte("X-Api-Key: [REDACTED]")},
 }
 
 type RedactWriter struct{ w io.Writer }

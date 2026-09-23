@@ -67,7 +67,7 @@ Small documentation fixes can be submitted directly as pull requests. For larger
 
 ### Prerequisites
 
-- Go 1.23 or higher (`go version`)
+- Go 1.26 or higher (`go version`)
 - Docker 20.10+ and Docker Compose v2+
 - Git
 
@@ -204,7 +204,7 @@ When adding new scenario mappings to `internal/sink/abuseipdb/mapper.go`:
 ### Docker and Compose Standards
 
 **Dockerfile**
-- Builder stage: `golang:1.23-alpine`
+- Builder stage: `golang:1.26-alpine`
 - Runtime stage: `gcr.io/distroless/static-debian12:nonroot`
 - Build flags: `CGO_ENABLED=0 -ldflags="-s -w" -trimpath`
 - Do not add runtime dependencies (curl, wget, jq, etc.)
@@ -257,7 +257,7 @@ docker exec crowdsec cscli decisions delete -i 203.0.113.42
 LOG_LEVEL=debug docker compose up -d --force-recreate abuseipdb-bouncer
 docker exec crowdsec cscli decisions add -i 192.168.1.1 -t ban -d 1h
 docker logs -f abuseipdb-bouncer | grep 192.168.1.1
-# Verify: "decision filtered" with filter=private-ip
+# Verify: "decision filtered" with filter=private_ip
 ```
 
 ## Submitting Changes

@@ -1,5 +1,5 @@
 # ---- Builder ----
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
 ARG COMMIT=none
@@ -66,6 +66,9 @@ USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/bouncer"]
 
+# `bouncer healthcheck` GETs the running process's /healthz on METRICS_ADDR
+# (the image has no curl/wget). It never opens state.db, which the running
+# bouncer holds under an exclusive bbolt lock. Requires METRICS_ENABLED=true.
 HEALTHCHECK \
     --interval=30s \
     --timeout=5s \

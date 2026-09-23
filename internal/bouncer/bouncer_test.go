@@ -41,8 +41,7 @@ func (f *fakeSink) Report(_ context.Context, r *sink.Report) error {
 	f.reports = append(f.reports, r)
 	return nil
 }
-func (f *fakeSink) Healthy(_ context.Context) error { return nil }
-func (f *fakeSink) Close() error                    { return nil }
+func (f *fakeSink) Close() error { return nil }
 
 // newTestBouncer creates a Bouncer wired to an in-memory store and a fakeSink.
 func newTestBouncer(t *testing.T, dailyLimit int, cooldown time.Duration) (*Bouncer, *fakeSink) {
@@ -296,38 +295,6 @@ func TestCooldownFilter(t *testing.T) {
 	require.NotNil(t, reason)
 	assert.Equal(t, "cooldown", reason.Filter)
 }
-
-func TestHealthy_AllSinksOK(t *testing.T) {
-	store := storage.NewMemStore(1000, time.Minute)
-	cfg := &config.Config{DailyLimit: 1000, CooldownDuration: time.Minute}
-	b := &Bouncer{
-		cfg:   cfg,
-		sinks: []sink.Sink{&fakeSink{}, &fakeSink{}},
-		store: store,
-	}
-
-	assert.NoError(t, b.Healthy(context.Background()))
-}
-
-func TestHealthy_SinkFailure(t *testing.T) {
-	store := storage.NewMemStore(1000, time.Minute)
-	cfg := &config.Config{DailyLimit: 1000, CooldownDuration: time.Minute}
-	b := &Bouncer{
-		cfg:   cfg,
-		sinks: []sink.Sink{&unhealthySink{}},
-		store: store,
-	}
-
-	assert.Error(t, b.Healthy(context.Background()))
-}
-
-// unhealthySink always returns an error from Healthy.
-type unhealthySink struct{}
-
-func (u *unhealthySink) Name() string                                   { return "unhealthy" }
-func (u *unhealthySink) Report(_ context.Context, _ *sink.Report) error { return nil }
-func (u *unhealthySink) Healthy(_ context.Context) error                { return errors.New("sink unavailable") }
-func (u *unhealthySink) Close() error                                   { return nil }
 
 func TestBuildPreQueueFilters_Whitelist(t *testing.T) {
 	validDec := func(ip string) *decision.Decision {

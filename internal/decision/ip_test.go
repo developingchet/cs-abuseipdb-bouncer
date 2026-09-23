@@ -31,6 +31,22 @@ func TestIsPrivate(t *testing.T) {
 		{"192.168.255.255", true, "RFC1918 Class C end"},
 		{"192.168.1.100", true, "RFC1918 Class C middle"},
 
+		// IPv4-mapped IPv6 must be checked as IPv4
+		{"::ffff:10.0.0.1", true, "IPv4-mapped RFC1918"},
+		{"::ffff:127.0.0.1", true, "IPv4-mapped loopback"},
+		{"::ffff:8.8.8.8", false, "IPv4-mapped public"},
+
+		// Other reserved ranges
+		{"192.0.0.8", true, "IETF protocol assignments"},
+		{"198.18.0.1", true, "benchmarking"},
+		{"198.19.255.255", true, "benchmarking end"},
+		{"224.0.0.1", true, "multicast"},
+		{"239.255.255.250", true, "multicast SSDP"},
+		{"240.0.0.1", true, "reserved class E"},
+		{"255.255.255.255", true, "limited broadcast"},
+		{"::", true, "IPv6 unspecified"},
+		{"ff02::1", true, "IPv6 multicast"},
+
 		// Loopback (127.0.0.0/8)
 		{"127.0.0.1", true, "loopback standard"},
 		{"127.255.255.255", true, "loopback end"},

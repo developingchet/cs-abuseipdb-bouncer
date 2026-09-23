@@ -218,10 +218,18 @@ Private and reserved IP ranges are rejected by `internal/decision/ip.go` using `
 169.254.0.0/16  Link-local (RFC 3927)
 0.0.0.0/8       This network (RFC 1122)
 100.64.0.0/10   CGNAT (RFC 6598)
+192.0.0.0/24    IETF protocol assignments (RFC 6890)
+198.18.0.0/15   Benchmarking (RFC 2544)
+224.0.0.0/4     Multicast
+240.0.0.0/4     Reserved, incl. 255.255.255.255 broadcast
+::/128          IPv6 unspecified
 ::1/128         IPv6 loopback (RFC 4291)
 fe80::/10       IPv6 link-local (RFC 4291)
 fc00::/7        IPv6 unique local (RFC 4193)
+ff00::/8        IPv6 multicast
 ```
+
+IPv4-mapped IPv6 addresses (`::ffff:10.0.0.1`) are unmapped before the check. The RFC 5737 / RFC 3849 documentation ranges are intentionally not listed: they never occur in real traffic and the test suite uses them as stand-ins for public IPs.
 
 ---
 
@@ -240,9 +248,24 @@ type workerPool struct {
 }
 ```
 
-**Submission** is non-blocking. If the channel is full, the job is dropped and `DecisionsSkipped.WithLabelValues("buffer-full")` is incremented. This prevents the event loop from ever blocking on the pool, at the cost of dropping decisions during traffic spikes. The buffer size (`WORKER_BUFFER`, default 256) should be set to match the expected burst depth.
+**Submission** is non-blocking. If the channel is full, the job is dropped and `DecisionsSkipped.WithLabelValues("buffer_full")` is incremented. This prevents the event loop from ever blocking on the pool, at the cost of dropping decisions during traffic spikes. The buffer size (`WORKER_BUFFER`, default 256) should be set to match the expected burst depth.
 
-**Shutdown** is cooperative: `pool.stop()` closes `jobCh`, which causes workers to drain remaining buffered jobs (if the context is still live) and then exit. `wg.Wait()` ensures all workers have fully exited before the function returns. This is called both on context cancellation and on LAPI stream close.
+**Startup ordering:** the pool is created before the retry worker starts, because the retry worker flushes due entries immediately (the crash-recovery case) and submits them to the pool.
+
+**Shutdown** is ordered: `Run` cancels its context, waits for the retry worker (the only other goroutine that calls `submit`) to exit, and only then calls `pool.stop()`, which closes `jobCh` and waits for workers to drain. Closing the channel while a producer could still send would panic. Reports interrupted by the cancelled context are persisted to the retry queue rather than lost.
+
+**Outcome handling** (per report, in `workerPool.reportTo`):
+
+| Sink result | Health | Action |
+|-------------|--------|--------|
+| success | OK | count as sent |
+| `sink.ErrDuplicate` (429 "same IP … once in 15 minutes") | OK | drop, `duplicate` skip metric |
+| `sink.ErrRateLimit` (other 429) | OK | queue for retry after `RetryAfter` |
+| `sink.ErrPermanent` (422 validation) | OK | drop, `rejected` skip metric |
+| context cancelled (shutdown) | — | queue for retry in 10 s |
+| anything else (network, 5xx, `sink.ErrUnauthorized`) | failure | queue with 1 m → 30 m exponential backoff |
+
+A decision is attempted at most 6 times (`maxDeliveryAttempts`); the attempt count is persisted with the retry entry so the cap holds across restarts.
 
 ### Known Limit: bbolt Write Serialisation
 
@@ -270,10 +293,11 @@ Each use copies the buffer contents to a fresh `[]byte` before returning the buf
 type Sink interface {
     Name() string
     Report(ctx context.Context, r *Report) error
-    Healthy(ctx context.Context) error
     Close() error
 }
 ```
+
+There is deliberately no active health probe on the interface: for AbuseIPDB any probe would spend `/check` quota. Sink health is instead inferred from real report outcomes (see [Health Endpoints](#health-endpoints)).
 
 AbuseIPDB is the first and only implementation. The interface exists to support future reporters (Slack alerts, webhook POST, MISP feed, custom SIEM) without modifying the bouncer's event loop.
 
@@ -312,7 +336,7 @@ This atomic check-and-set eliminates the TOCTOU race present in the earlier sepa
 
 `internal/bouncer/janitor.go` runs a background goroutine on a configurable tick (`JANITOR_INTERVAL`, default 5 minutes):
 
-1. **Prune:** `store.CooldownPrune()` deletes all cooldown entries whose expiry timestamp is in the past. This bounds the growth of `state.db` to the number of unique IPs seen within the cooldown window.
+1. **Prune:** `store.CooldownPrune()` deletes all cooldown entries whose expiry timestamp is in the past. This bounds the growth of `state.db` to the number of unique IPs seen within the cooldown window. `store.RetryPrune()` removes retry entries that became due more than 24 hours ago.
 2. **DB size metric:** `os.Stat(store.DBPath()).Size()` is written to the `cs_abuseipdb_bbolt_db_size_bytes` Prometheus gauge. This metric is useful for detecting unexpected growth (e.g. a misconfigured cooldown of 0 seconds generating millions of entries).
 
 The janitor exits cleanly when its context is cancelled (the same context as the bouncer's `Run` loop).
@@ -333,28 +357,44 @@ The AbuseIPDB client uses a custom retry strategy rather than a generic retry li
 ```
 Attempt 1
   |
-  +-- Success (200) ---------> done
-  +-- Duplicate (422) -------> done (not an error)
-  +-- Rate limited (429) ----> sleep Retry-After, return error (no retry)
-  +-- Unauthorized (401) ----> return error (no retry)
-  +-- Network error ---------> wait 5s, retry
-  +-- Unexpected (5xx) ------> wait 5s, retry
+  +-- Success (200) --------------> done
+  +-- 429 "same IP address" ------> sink.ErrDuplicate (no retry)
+  +-- 429 other (rate limit) -----> sink.ErrRateLimit{RetryAfter} (no sleep)
+  +-- 422 (validation) -----------> sink.ErrPermanent (no retry)
+  +-- 401 (unauthorized) ---------> sink.ErrUnauthorized (no in-line retry)
+  +-- Network error / 5xx --------> wait 5s, retry
   |
 Attempt 2 (if retrying)
   |
   +-- Same as above
-  +-- Network error ---------> wait 10s, retry
+  +-- Network error / 5xx --------> wait 10s, retry
   |
 Attempt 3 (if retrying)
   |
-  +-- Failure ---------------> return error
+  +-- Failure --------------------> return error
 ```
 
-Key decisions:
-- 401 never retries. A bad API key will not improve with time.
-- 422 is silently accepted. A duplicate report within 15 minutes is expected and normal.
-- 429 reads the `Retry-After` value from the response body (not the header) and sleeps, then returns an error. The decision is not retried because quota is already exhausted.
-- Network errors and 5xx responses retry with a doubling backoff: 5s after attempt 1, 10s after attempt 2.
+Key decisions (checked against https://docs.abuseipdb.com/):
+- AbuseIPDB rejects a repeat report of the same IP within 15 minutes with **429**, not 422. It is recognised by its message and dropped: resending cannot succeed.
+- 422 is AbuseIPDB's validation error (bad IP, bad categories). It is a real failure and is logged at error level, not counted as a sent report.
+- For other 429s the wait comes from the `Retry-After` header (seconds), falling back to `X-RateLimit-Reset` (epoch of the daily reset), then an "in N seconds" hint in the body, then 60 s; capped at 24 h. The client never sleeps on 429 — the worker pool persists the decision to the retry queue.
+- 401 is not retried in-line, but the pool queues the decision with backoff: once the key is fixed and the container restarted, queued reports are delivered.
+- Network errors and 5xx responses retry in-line with a doubling backoff (5 s, 10 s); if all three attempts fail, the pool queues the decision.
+
+---
+
+## Health Endpoints
+
+`internal/bouncer/health.go` keeps lock-free (atomic) timestamps updated by the running process:
+
+- `recordLAPIPull` — every message received on the go-cs-bouncer stream channel (one per successful poll)
+- `recordSinkOK` / `recordSinkFailure` — every AbuseIPDB outcome, classified as in the pool table above
+
+`/healthz` (liveness) fails when the last pull is older than `max(5 × POLL_INTERVAL, 2m)` (with the same grace after startup) or after 5 consecutive AbuseIPDB failures. `/readyz` additionally requires one successful pull. Both are served from memory and return JSON.
+
+The Docker `HEALTHCHECK` runs `bouncer healthcheck`, a tiny HTTP client that GETs `/healthz` on the loopback form of `METRICS_ADDR`. It must never construct the `Bouncer`: that opens `state.db`, and bbolt holds an exclusive `flock` on it for the lifetime of the running process, so a second opener — even read-only — blocks until its 2 s timeout. (Earlier versions did exactly that and reported `storage: open /data/state.db: timeout` on every probe.)
+
+go-cs-bouncer runs with `RetryInitialConnect: true`, so an unreachable LAPI at startup keeps the process alive and retrying (every 10 s) rather than exiting; the health endpoint turns unhealthy once the grace period passes. Its logrus output — the only place LAPI poll failures are reported — is bridged into zerolog (`internal/logger/logrus.go`), capped at `info` because the CrowdSec client dumps request headers (including `X-Api-Key`) at debug/trace.
 
 ---
 

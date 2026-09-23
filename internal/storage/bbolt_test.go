@@ -364,7 +364,7 @@ func TestBoltStore_RetryEnqueue_MarshalError(t *testing.T) {
 		return nil, errors.New("marshal failed")
 	}
 
-	err := s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(-time.Second))
+	err := s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(-time.Second), 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marshal failed")
 }
@@ -388,7 +388,7 @@ func TestBoltStore_Retry_EnqueueDequeue(t *testing.T) {
 	s := newTestStore(t, 1000, time.Minute)
 	past := time.Now().Add(-time.Second)
 
-	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1))
 
 	records, err := s.RetryDequeue(time.Now(), 10)
 	require.NoError(t, err)
@@ -403,7 +403,7 @@ func TestBoltStore_Retry_IgnoresFutureEntries(t *testing.T) {
 	s := newTestStore(t, 1000, time.Minute)
 	future := time.Now().Add(time.Hour)
 
-	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", future, 1))
 
 	records, err := s.RetryDequeue(time.Now(), 10)
 	require.NoError(t, err)
@@ -414,7 +414,7 @@ func TestBoltStore_Retry_Delete(t *testing.T) {
 	s := newTestStore(t, 1000, time.Minute)
 	past := time.Now().Add(-time.Second)
 
-	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1))
 
 	records, err := s.RetryDequeue(time.Now(), 10)
 	require.NoError(t, err)
@@ -434,20 +434,20 @@ func TestBoltStore_Retry_Count(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
 
-	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(time.Hour)))
-	require.NoError(t, s.RetryEnqueue("10.0.0.2", "s2", time.Now().Add(time.Hour)))
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(time.Hour), 1))
+	require.NoError(t, s.RetryEnqueue("10.0.0.2", "s2", time.Now().Add(time.Hour), 1))
 
 	count, err = s.RetryCount()
 	require.NoError(t, err)
 	assert.Equal(t, 2, count)
 }
 
-func TestBoltStore_Retry_IncrementAttempts(t *testing.T) {
+func TestBoltStore_Retry_ReplacesEntryWithCallerAttempts(t *testing.T) {
 	s := newTestStore(t, 1000, time.Minute)
 	retryAt := time.Now().Add(-time.Second)
 
-	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt))
-	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt, 1))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt, 2))
 
 	records, err := s.RetryDequeue(time.Now(), 10)
 	require.NoError(t, err)
@@ -462,7 +462,7 @@ func TestBoltStore_Retry_PersistsAcrossReopen(t *testing.T) {
 	s1, err := Open(path, 1000, time.Minute)
 	require.NoError(t, err)
 	retryAt := time.Now().Add(-time.Second)
-	require.NoError(t, s1.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt))
+	require.NoError(t, s1.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", retryAt, 1))
 	require.NoError(t, s1.Close())
 
 	s2, err := Open(path, 1000, time.Minute)
@@ -480,7 +480,7 @@ func TestBoltStore_RetryDelete_Error(t *testing.T) {
 	s := newTestStore(t, 1000, time.Minute)
 
 	past := time.Now().Add(-time.Second)
-	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past))
+	require.NoError(t, s.RetryEnqueue("203.0.113.42", "crowdsecurity/ssh-bf", past, 1))
 
 	records, err := s.RetryDequeue(time.Now(), 10)
 	require.NoError(t, err)
@@ -500,11 +500,11 @@ func TestBoltStore_RetryPrune_RemovesOldEntries(t *testing.T) {
 
 	// Enqueue a past entry (older than 25 hours — will be pruned).
 	veryOld := time.Now().Add(-25 * time.Hour)
-	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", veryOld))
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", veryOld, 1))
 
 	// Enqueue a recent entry (1 hour ago — not pruned).
 	recentPast := time.Now().Add(-time.Hour)
-	require.NoError(t, s.RetryEnqueue("10.0.0.2", "s2", recentPast))
+	require.NoError(t, s.RetryEnqueue("10.0.0.2", "s2", recentPast, 1))
 
 	// Prune entries older than 24 hours.
 	require.NoError(t, s.RetryPrune(time.Now().Add(-24*time.Hour)))
@@ -537,7 +537,7 @@ func TestBoltStore_RetryPrune_DeleteError(t *testing.T) {
 
 	// Inject an entry that is old enough to be pruned.
 	veryOld := time.Now().Add(-48 * time.Hour)
-	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", veryOld))
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", veryOld, 1))
 
 	deleteBucketKeyFn = func(*bolt.Bucket, []byte) error {
 		return errors.New("delete failed")
@@ -572,13 +572,13 @@ func TestBoltStore_RetryEnqueue_CorruptExistingEntry(t *testing.T) {
 		return tx.Bucket(bucketRetry).Put(key, []byte("not-json"))
 	}))
 
-	// RetryEnqueue for the same IP — corrupt existing data means Attempts=1.
-	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(-time.Second)))
+	// RetryEnqueue for the same IP overwrites the corrupt value.
+	require.NoError(t, s.RetryEnqueue("10.0.0.1", "s1", time.Now().Add(-time.Second), 1))
 
 	records, err := s.RetryDequeue(time.Now(), 10)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
-	assert.Equal(t, 1, records[0].Attempts, "corrupt existing data means Attempts should reset to 1")
+	assert.Equal(t, 1, records[0].Attempts, "corrupt entry should be replaced")
 }
 
 func TestBoltStore_Open_CooldownBucketInitError(t *testing.T) {

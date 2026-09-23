@@ -9,6 +9,8 @@ package sink_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,7 +25,6 @@ type stubSink struct{}
 
 func (s *stubSink) Name() string                                   { return "stub" }
 func (s *stubSink) Report(_ context.Context, _ *sink.Report) error { return nil }
-func (s *stubSink) Healthy(_ context.Context) error                { return nil }
 func (s *stubSink) Close() error                                   { return nil }
 
 // Compile-time assertion: stubSink must satisfy sink.Sink.
@@ -60,4 +61,19 @@ func TestErrRateLimit_Error(t *testing.T) {
 	err := sink.ErrRateLimit{RetryAfter: 30 * time.Second}
 	assert.Contains(t, err.Error(), "30s")
 	assert.Contains(t, err.Error(), "rate limited")
+}
+
+func TestErrPermanent_WrapsCause(t *testing.T) {
+	cause := errors.New("invalid report parameters (422)")
+	var err error = sink.ErrPermanent{Err: cause}
+
+	assert.Equal(t, "permanent failure: invalid report parameters (422)", err.Error())
+	assert.ErrorIs(t, err, cause)
+	var perm sink.ErrPermanent
+	assert.ErrorAs(t, fmt.Errorf("wrapped: %w", err), &perm)
+}
+
+func TestSentinels_AreDistinct(t *testing.T) {
+	assert.NotErrorIs(t, sink.ErrDuplicate, sink.ErrUnauthorized)
+	assert.ErrorIs(t, fmt.Errorf("%w (401)", sink.ErrUnauthorized), sink.ErrUnauthorized)
 }
