@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	"github.com/go-openapi/strfmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -377,6 +379,7 @@ func TestRun_PushesUsageMetrics(t *testing.T) {
 	var usageCalls atomic.Int32
 	var payloadMu sync.Mutex
 	var lastPayload telemetry.MetricsPayload
+	var validateErr error
 
 	lapi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -390,10 +393,15 @@ func TestRun_PushesUsageMetrics(t *testing.T) {
 		case "/v1/usage-metrics":
 			usageCalls.Add(1)
 			defer r.Body.Close()
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
 			var p telemetry.MetricsPayload
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&p))
+			require.NoError(t, json.Unmarshal(body, &p))
+			var am models.AllMetrics
+			require.NoError(t, json.Unmarshal(body, &am))
 			payloadMu.Lock()
 			lastPayload = p
+			validateErr = am.Validate(strfmt.Default)
 			payloadMu.Unlock()
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, `{}`)
@@ -422,10 +430,13 @@ func TestRun_PushesUsageMetrics(t *testing.T) {
 
 	payloadMu.Lock()
 	defer payloadMu.Unlock()
+	require.NoError(t, validateErr, "payload must satisfy the LAPI usage-metrics schema")
 	require.Len(t, lastPayload.RemediationComponents, 1)
 	require.NotEmpty(t, lastPayload.RemediationComponents[0].Metrics)
-	assert.Equal(t, "processed", lastPayload.RemediationComponents[0].Metrics[0].Name)
-	assert.GreaterOrEqual(t, lastPayload.RemediationComponents[0].Metrics[0].Value, int64(1))
+	items := lastPayload.RemediationComponents[0].Metrics[0].Items
+	require.NotEmpty(t, items)
+	assert.Equal(t, "processed", items[0].Name)
+	assert.GreaterOrEqual(t, items[0].Value, float64(1))
 }
 
 func TestRun_UsageMetricsPushError_DoesNotCrash(t *testing.T) {
