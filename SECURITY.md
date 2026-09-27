@@ -72,9 +72,26 @@ cosign verify developingchet/cs-abuseipdb-bouncer:<tag> \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
+- `checksums.txt` covers every release binary and the SBOM, and is signed with Cosign. Verify downloaded binaries:
+
+```bash
+cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp="https://github.com/developingchet/cs-abuseipdb-bouncer/.github/workflows/release.yml@refs/tags/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+sha256sum --ignore-missing -c checksums.txt
+```
+
+- Every pull request and push to `main`, plus a weekly scheduled run, verifies module checksums (`go mod verify`), runs **govulncheck**, builds the image and scans it with Trivy, and scans the Go modules and GitHub Actions with **[Socket](https://socket.dev)**. Pull requests that add a dependency violating the Socket policy are blocked.
+- A weekly workflow rescans the published `latest` image for each platform, so CVEs disclosed after a release show up in the Security tab.
+- [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/developingchet/cs-abuseipdb-bouncer) grades the repository's own practices (pinned actions, token permissions, branch protection, signed releases).
+
 ### Dependency Management
 
-Direct and transitive Go dependencies are tracked in `go.sum`. Trivy scans the final Docker image on every release and blocks publication if HIGH or CRITICAL CVEs are found in unfixed packages.
+Direct and transitive Go dependencies are tracked in `go.sum`. Trivy scans the final Docker image on every release and blocks publication if fixable HIGH or CRITICAL CVEs are found. Dependabot keeps the Go modules, the CI tools in `.github/tools`, the Socket CLI, GitHub Actions and the Dockerfile base images up to date, and every action is pinned to a commit SHA.
+
+#### Dependency alerts
+
+`socket.yml` disables no Socket alert types. An alert that is expected for this project (for example network access in an HTTP client library) is triaged in the Socket dashboard and recorded here with the reason, rather than hidden in the configuration.
 
 ## Scope
 
