@@ -3,6 +3,8 @@ package telemetry
 import (
 	"context"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 const pushTimeout = 10 * time.Second
@@ -62,7 +64,11 @@ func (s *Sender) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = s.Flush(ctx)
+			if err := s.Flush(ctx); err != nil {
+				// The LAPI client error carries the response body, e.g. the
+				// schema validation failure on a 422.
+				log.Warn().Err(err).Msg("usage metrics push failed")
+			}
 		}
 	}
 }

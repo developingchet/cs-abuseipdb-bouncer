@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -220,4 +223,56 @@ func TestSenderRun_HTTPTickerPushesPeriodically(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("sender did not stop on cancel")
 	}
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestSenderRun_LogsPushFailure(t *testing.T) {
+	var logs syncBuffer
+	orig := log.Logger
+	log.Logger = zerolog.New(&logs)
+	t.Cleanup(func() { log.Logger = orig })
+
+	counter := NewCounter()
+	counter.AddProcessed(1)
+	fp := &fakePusher{err: errors.New("422 Unprocessable Entity: utc_startup_timestamp is required")}
+
+	s := NewSender("v2.0.0", time.Unix(1, 0).UTC(), 20*time.Millisecond, counter, fp)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		s.Run(ctx)
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), "usage metrics push failed")
+	}, time.Second, 10*time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sender did not stop on cancel")
+	}
+
+	out := logs.String()
+	assert.Contains(t, out, `"level":"warn"`)
+	assert.Contains(t, out, "utc_startup_timestamp is required")
+	assert.Equal(t, int64(1), counter.Processed())
 }

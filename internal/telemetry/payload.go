@@ -6,18 +6,29 @@ import (
 	"time"
 )
 
-// MetricLabel identifies optional dimensions for a metric item.
-type MetricLabel struct {
-	Origin          string `json:"origin,omitempty"`
-	RemediationType string `json:"remediation_type,omitempty"`
+// The types below mirror the LAPI swagger definitions used by
+// POST /v1/usage-metrics (RemediationComponentsMetrics, DetailedMetrics,
+// MetricsMeta, MetricsDetailItem, OSversion). LAPI rejects the body with 422
+// if a required field is missing and silently drops unknown fields.
+
+// MetricsDetailItem is a single usage metric value.
+type MetricsDetailItem struct {
+	Name   string            `json:"name"`
+	Value  float64           `json:"value"`
+	Unit   string            `json:"unit"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
-// Metric is a single usage metric value.
-type Metric struct {
-	Name   string      `json:"name"`
-	Value  int64       `json:"value"`
-	Unit   string      `json:"unit"`
-	Labels MetricLabel `json:"labels,omitempty"`
+// MetricsMeta carries the window metadata for one DetailedMetrics entry.
+type MetricsMeta struct {
+	WindowSizeSeconds int64 `json:"window_size_seconds"`
+	UtcNowTimestamp   int64 `json:"utc_now_timestamp"`
+}
+
+// DetailedMetrics groups metric items collected over one window.
+type DetailedMetrics struct {
+	Items []MetricsDetailItem `json:"items"`
+	Meta  MetricsMeta         `json:"meta"`
 }
 
 // OSInfo identifies the runtime operating system.
@@ -26,21 +37,14 @@ type OSInfo struct {
 	Version string `json:"version"`
 }
 
-// MetaInfo carries window and timestamp metadata for the payload.
-type MetaInfo struct {
-	WindowSizeSeconds   int64 `json:"window_size_seconds"`
-	UtcStartupTimestamp int64 `json:"utc_startup_timestamp"`
-	UtcNowTimestamp     int64 `json:"utc_now_timestamp"`
-}
-
 // RemediationComponent is the top-level remediation component entry.
 type RemediationComponent struct {
-	Type     string   `json:"type"`
-	Version  string   `json:"version"`
-	OS       OSInfo   `json:"os"`
-	Features []string `json:"features"`
-	Meta     MetaInfo `json:"meta"`
-	Metrics  []Metric `json:"metrics"`
+	Type                string            `json:"type"`
+	Version             string            `json:"version"`
+	OS                  OSInfo            `json:"os"`
+	FeatureFlags        []string          `json:"feature_flags"`
+	UtcStartupTimestamp int64             `json:"utc_startup_timestamp"`
+	Metrics             []DetailedMetrics `json:"metrics"`
 }
 
 // MetricsPayload is the request body sent to /v1/usage-metrics.
@@ -61,14 +65,6 @@ func BuildMetricsPayloadAt(
 	processed int64,
 	now time.Time,
 ) MetricsPayload {
-	metrics := []Metric{
-		{
-			Name:  "processed",
-			Value: processed,
-			Unit:  "request",
-		},
-	}
-
 	return MetricsPayload{
 		RemediationComponents: []RemediationComponent{
 			{
@@ -78,13 +74,23 @@ func BuildMetricsPayloadAt(
 					Name:    runtime.GOOS,
 					Version: runtime.GOARCH,
 				},
-				Features: []string{},
-				Meta: MetaInfo{
-					WindowSizeSeconds:   windowSeconds,
-					UtcStartupTimestamp: startupTime.UTC().Unix(),
-					UtcNowTimestamp:     now.UTC().Unix(),
+				FeatureFlags:        []string{},
+				UtcStartupTimestamp: startupTime.UTC().Unix(),
+				Metrics: []DetailedMetrics{
+					{
+						Items: []MetricsDetailItem{
+							{
+								Name:  "processed",
+								Value: float64(processed),
+								Unit:  "request",
+							},
+						},
+						Meta: MetricsMeta{
+							WindowSizeSeconds: windowSeconds,
+							UtcNowTimestamp:   now.UTC().Unix(),
+						},
+					},
 				},
-				Metrics: metrics,
 			},
 		},
 	}
