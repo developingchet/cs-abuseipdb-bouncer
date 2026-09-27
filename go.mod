@@ -15,7 +15,7 @@ require (
 	github.com/knadh/koanf/v2 v2.1.2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/rs/zerolog v1.35.1
-	github.com/sirupsen/logrus v1.10.0
+	github.com/sirupsen/logrus v1.10.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.etcd.io/bbolt v1.5.0
