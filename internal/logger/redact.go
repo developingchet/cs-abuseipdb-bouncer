@@ -10,8 +10,10 @@ var redactPatterns = []struct {
 	re          *regexp.Regexp
 	replacement []byte
 }{
-	// AbuseIPDB API keys are 80 hex characters.
-	{regexp.MustCompile(`[A-Fa-f0-9]{80}`), []byte("[REDACTED-API-KEY]")},
+	// AbuseIPDB API keys are 80 hex characters. The whole hex run is replaced:
+	// matching exactly 80 would leave the tail of a key that follows other hex
+	// characters in the log.
+	{regexp.MustCompile(`[A-Fa-f0-9]{80,}`), []byte("[REDACTED-API-KEY]")},
 	// Bearer tokens in Authorization headers or log fields.
 	{regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*`), []byte("bearer [REDACTED]")},
 	// CrowdSec LAPI bouncer keys in dumped request headers.

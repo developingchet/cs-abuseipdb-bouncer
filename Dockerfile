@@ -1,5 +1,5 @@
 # ---- Builder ----
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.8-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 
 ARG VERSION=dev
 ARG COMMIT=none
@@ -27,7 +27,7 @@ RUN CGO_ENABLED=0 GOOS=linux \
     ./cmd/bouncer/
 
 # ---- Runtime ----
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 ARG VERSION=dev
 ARG COMMIT=none
