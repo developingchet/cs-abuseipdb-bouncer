@@ -109,7 +109,7 @@ jobs:
             --security-opt "seccomp:./security/seccomp-bouncer.json" \
             --security-opt no-new-privileges:true \
             --cap-drop ALL \
-            alpine:latest \
+            alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0 \
             ls /proc/self/fd
 
       - name: Build image (linux/amd64)
