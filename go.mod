@@ -1,8 +1,6 @@
 module github.com/developingchet/cs-abuseipdb-bouncer
 
-go 1.26.1
-
-toolchain go1.26.8
+go 1.27.1
 
 require (
 	github.com/crowdsecurity/crowdsec v1.8.1

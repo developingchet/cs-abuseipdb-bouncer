@@ -173,7 +173,7 @@ Expected output:
 
 ```
 [+] Building X.Xs (8/8) FINISHED
- => [builder 1/5] FROM docker.io/library/golang:1.26-alpine
+ => [builder 1/5] FROM docker.io/library/golang:1.27-alpine
  => [builder 4/5] RUN go mod download
  => [builder 5/5] RUN CGO_ENABLED=0 ... go build -o /bouncer ./cmd/bouncer/
  => [stage-1 1/4] FROM gcr.io/distroless/static-debian12:nonroot

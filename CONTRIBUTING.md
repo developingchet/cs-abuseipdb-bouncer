@@ -67,7 +67,7 @@ Small documentation fixes can be submitted directly as pull requests. For larger
 
 ### Prerequisites
 
-- Go 1.26 or higher (`go version`)
+- Go 1.27 or higher (`go version`)
 - Docker 20.10+ and Docker Compose v2+
 - Git
 
@@ -204,7 +204,7 @@ When adding new scenario mappings to `internal/sink/abuseipdb/mapper.go`:
 ### Docker and Compose Standards
 
 **Dockerfile**
-- Builder stage: `golang:1.26-alpine`
+- Builder stage: `golang:1.27-alpine`
 - Runtime stage: `gcr.io/distroless/static-debian12:nonroot`
 - Build flags: `CGO_ENABLED=0 -ldflags="-s -w" -trimpath`
 - Do not add runtime dependencies (curl, wget, jq, etc.)

@@ -387,7 +387,7 @@ The binary compiles to approximately 8MB. Docker is required (Go does not need t
 docker compose build
 ```
 
-To run tests directly (requires Go 1.26+; `-race` also needs a C compiler / CGO):
+To run tests directly (requires Go 1.27+; `-race` also needs a C compiler / CGO):
 
 ```bash
 go test -race ./... -count=1 -timeout=120s

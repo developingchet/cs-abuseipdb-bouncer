@@ -533,7 +533,7 @@ func TestRun_LAPITimeout200ms_NoCrash(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, elapsed, time.Second)
+	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "Run must keep retrying until the context ends")
 	assert.Less(t, elapsed, 3*time.Second, "Run must return promptly once the context ends")
 	assert.Equal(t, 200*time.Millisecond, b.stream.APIClient.GetClient().Timeout)
 	_, readyErr := b.health.ready()
