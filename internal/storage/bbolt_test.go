@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -380,6 +381,105 @@ func TestBoltStore_QuotaConsume_MarshalError(t *testing.T) {
 	assert.True(t, allowed, "allowed is set before marshal and remains true on marshal failure")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marshal failed")
+}
+
+// --- Admission tests ---
+
+func cooldownKeyCount(t *testing.T, s *BoltStore) int {
+	t.Helper()
+	var n int
+	require.NoError(t, s.db.View(func(tx *bolt.Tx) error {
+		n = tx.Bucket(bucketCooldown).Stats().KeyN
+		return nil
+	}))
+	return n
+}
+
+func TestBoltStore_Admit_CooldownHitConsumesNoQuota(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	got, err := s.Admit("203.0.113.42")
+	require.NoError(t, err)
+	assert.Equal(t, AdmitGranted, got)
+	assert.Equal(t, 1, s.QuotaCount())
+	assert.False(t, s.CooldownAllow("203.0.113.42"))
+
+	got, err = s.Admit("203.0.113.42")
+	require.NoError(t, err)
+	assert.Equal(t, AdmitCooldown, got)
+	assert.Equal(t, 1, s.QuotaCount(), "a cooldown hit must not consume quota")
+}
+
+func TestBoltStore_Admit_ExhaustedQuotaWritesNoCooldown(t *testing.T) {
+	const limit = 2
+	s := newTestStore(t, limit, time.Hour)
+
+	for i := 0; i < limit; i++ {
+		got, err := s.Admit(fmt.Sprintf("198.51.100.%d", i+1))
+		require.NoError(t, err)
+		require.Equal(t, AdmitGranted, got)
+	}
+	require.Equal(t, limit, cooldownKeyCount(t, s))
+
+	for i := 0; i < 500; i++ {
+		ip := fmt.Sprintf("203.0.%d.%d", i/250, i%250+1)
+		got, err := s.Admit(ip)
+		require.NoError(t, err)
+		require.Equal(t, AdmitQuotaExhausted, got, ip)
+	}
+
+	assert.Equal(t, limit, cooldownKeyCount(t, s), "rejected decisions must not add cooldown entries")
+	assert.Equal(t, limit, s.QuotaCount())
+}
+
+func TestBoltStore_Admit_ExpiredCooldownIsAdmitted(t *testing.T) {
+	s := newTestStore(t, 1000, -time.Second)
+
+	for i := 0; i < 2; i++ {
+		got, err := s.Admit("203.0.113.42")
+		require.NoError(t, err)
+		assert.Equal(t, AdmitGranted, got)
+	}
+	assert.Equal(t, 2, s.QuotaCount())
+}
+
+func TestBoltStore_Admit_StaleQuotaDateResets(t *testing.T) {
+	s := newTestStore(t, 10, time.Minute)
+	stale, err := json.Marshal(quotaRecord{Count: 10, Date: "2000-01-01"})
+	require.NoError(t, err)
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketQuota).Put(keyToday, stale)
+	}))
+
+	got, err := s.Admit("203.0.113.42")
+	require.NoError(t, err)
+	assert.Equal(t, AdmitGranted, got)
+	assert.Equal(t, 1, s.QuotaCount())
+}
+
+func TestBoltStore_Admit_MarshalErrorRollsBack(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+	marshalQuotaRecord = func(any) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+
+	got, err := s.Admit("203.0.113.42")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal failed")
+	assert.Zero(t, got)
+	assert.Equal(t, 0, cooldownKeyCount(t, s))
+	assert.Equal(t, 0, s.QuotaCount())
+}
+
+func TestBoltStore_Admit_PutErrorRollsBack(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	// bbolt rejects an empty key, so the cooldown write fails.
+	got, err := s.Admit("")
+	require.Error(t, err)
+	assert.Zero(t, got)
+	assert.Equal(t, 0, s.QuotaCount())
 }
 
 // --- Retry queue tests ---

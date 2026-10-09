@@ -23,6 +23,13 @@ type Store interface {
 	// single bolt.Update. Returns (true, nil) if allowed, (false, nil) if active.
 	CooldownConsume(ip string) (bool, error)
 
+	// Admit applies the per-IP cooldown and the daily quota to ip in a single
+	// transaction. The cooldown is checked first, so a cooldown hit never
+	// consumes quota; nothing is written unless both gates pass, so an
+	// exhausted quota never adds a cooldown entry. On AdmitGranted the
+	// cooldown for ip is set and one quota unit is consumed.
+	Admit(ip string) (Admission, error)
+
 	// RetryEnqueue persists a failed decision for later retry, replacing any
 	// existing entry for ip. retryAfter is the wall-clock time after which the
 	// decision may be retried; attempts is the number of delivery attempts
@@ -49,6 +56,19 @@ type Store interface {
 
 	Close() error
 }
+
+// Admission is the outcome of Store.Admit. The zero value is returned with
+// an error.
+type Admission int
+
+const (
+	// AdmitGranted means the cooldown was set and a quota unit consumed.
+	AdmitGranted Admission = iota + 1
+	// AdmitCooldown means ip is still inside its cooldown window.
+	AdmitCooldown
+	// AdmitQuotaExhausted means today's quota is used up.
+	AdmitQuotaExhausted
+)
 
 // RetryRecord is a single entry returned by RetryDequeue.
 type RetryRecord struct {

@@ -266,7 +266,7 @@ log_level: info
 
 Per-IP suppression window. After a report is sent for an IP, subsequent decisions for that IP are silently dropped until this window expires.
 
-The default matches AbuseIPDB's server-side deduplication window (15 minutes). AbuseIPDB rejects a second report of the same IP within that window with HTTP 429 ("You can only report the same IP address … once in 15 minutes"); the bouncer recognises this as a duplicate and drops it without retrying (`cs_abuseipdb_decisions_skipped_total{filter="duplicate"}`). Values below 15m therefore only produce extra rejected calls. Cooldown state is stored atomically in bbolt (`CooldownConsume` is a single serialised transaction) — concurrent workers cannot double-report the same IP.
+The default matches AbuseIPDB's server-side deduplication window (15 minutes). AbuseIPDB rejects a second report of the same IP within that window with HTTP 429 ("You can only report the same IP address … once in 15 minutes"); the bouncer recognises this as a duplicate and drops it without retrying (`cs_abuseipdb_decisions_skipped_total{filter="duplicate"}`). Values below 15m therefore only produce extra rejected calls. Cooldown state is stored atomically in bbolt (`Admit` checks the cooldown and the quota in a single serialised transaction) — concurrent workers cannot double-report the same IP.
 
 Expired entries are pruned from `state.db` by the background janitor (see `JANITOR_INTERVAL`).
 

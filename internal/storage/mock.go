@@ -14,7 +14,7 @@ type MemStore struct {
 	cooldownDur time.Duration
 	quotaCount  int
 	quotaDate   string
-	cooldowns   map[string]int64    // sanitized IP → Unix expiry
+	cooldowns   map[string]int64      // sanitized IP → Unix expiry
 	retries     map[string]retryEntry // sanitized IP → retry entry
 }
 
@@ -135,6 +135,25 @@ func (m *MemStore) CooldownConsume(ip string) (bool, error) {
 	}
 	m.cooldowns[key] = now.Add(m.cooldownDur).Unix()
 	return true, nil
+}
+
+// Admit applies the cooldown and quota gates to ip under one lock. Nothing
+// is written unless both pass.
+func (m *MemStore) Admit(ip string) (Admission, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := sanitizeIP(ip)
+	now := time.Now()
+	if expiry, ok := m.cooldowns[key]; ok && now.Unix() < expiry {
+		return AdmitCooldown, nil
+	}
+	m.refreshDate()
+	if m.quotaCount >= m.limit {
+		return AdmitQuotaExhausted, nil
+	}
+	m.quotaCount++
+	m.cooldowns[key] = now.Add(m.cooldownDur).Unix()
+	return AdmitGranted, nil
 }
 
 // --- Retry queue ---

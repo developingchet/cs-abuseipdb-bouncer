@@ -83,8 +83,8 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │           │        │  (N workers, default 4)        │
 │           v        v                                │
 │    ┌──────────┐  ┌──────────┐                       │
-│    │ Worker 1 │  │ Worker N │  8. CooldownConsume   │
-│    │  atomic  │  │  atomic  │  9. QuotaConsume      │
+│    │ Worker 1 │  │ Worker N │  8. cooldown check    │
+│    │  atomic  │  │  atomic  │  9. quota check       │
 │    │ bbolt tx │  │ bbolt tx │  (single transaction) │
 │    └──────────┘  └──────────┘                       │
 │                                                     │

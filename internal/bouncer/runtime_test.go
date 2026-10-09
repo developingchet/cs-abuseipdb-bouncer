@@ -724,6 +724,7 @@ func (s *errorStore) CooldownAllow(string) bool                                 
 func (s *errorStore) CooldownRecord(string) error                                { return nil }
 func (s *errorStore) CooldownPrune() error                                       { return errors.New("prune failed") }
 func (s *errorStore) CooldownConsume(string) (bool, error)                       { return true, nil }
+func (s *errorStore) Admit(string) (storage.Admission, error)                    { return storage.AdmitGranted, nil }
 func (s *errorStore) RetryEnqueue(string, string, time.Time, int) error          { return nil }
 func (s *errorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error) { return nil, nil }
 func (s *errorStore) RetryDelete(string) error                                   { return nil }
@@ -754,6 +755,7 @@ func (s *recordErrorStore) CooldownAllow(string) bool                         { 
 func (s *recordErrorStore) CooldownRecord(string) error                       { return errors.New("cooldown record failed") }
 func (s *recordErrorStore) CooldownPrune() error                              { return nil }
 func (s *recordErrorStore) CooldownConsume(string) (bool, error)              { return true, nil }
+func (s *recordErrorStore) Admit(string) (storage.Admission, error)           { return storage.AdmitGranted, nil }
 func (s *recordErrorStore) RetryEnqueue(string, string, time.Time, int) error { return nil }
 func (s *recordErrorStore) RetryDequeue(time.Time, int) ([]storage.RetryRecord, error) {
 	return nil, nil
