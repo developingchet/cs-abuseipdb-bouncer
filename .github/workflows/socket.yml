@@ -28,11 +28,11 @@ jobs:
       contents: read
       pull-requests: write # PR alert comments
       issues: write
-    env:
-      SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
     steps:
       - name: Check for the Socket API key
         id: key
+        env:
+          SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
         run: |
           if [ -z "$SOCKET_SECURITY_API_KEY" ]; then
             echo "::notice::SOCKET_SECURITY_API_KEY is not set; skipping the Socket scan."
@@ -40,10 +40,17 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The CLI is installed from the base commit, never from the pull request,
+      # so a pull request cannot change the code that runs with the API key.
+      # A change to socket-cli.txt takes effect once it is merged.
+      - name: Check out the Socket CLI requirements from the base commit
         if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: socket-cli-base
+          sparse-checkout: .github/requirements
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.key.outputs.present == 'true'
         with:
@@ -51,10 +58,19 @@ jobs:
       - name: Install the Socket CLI
         if: steps.key.outputs.present == 'true'
         # Hash-locked (see .github/requirements/socket-cli.in); Dependabot updates it.
-        run: pip install --disable-pip-version-check --require-hashes --no-deps -r .github/requirements/socket-cli.txt
+        run: pip install --disable-pip-version-check --require-hashes --no-deps -r socket-cli-base/.github/requirements/socket-cli.txt
+      # The revision under test is only read as data by the scanner. Checking
+      # it out into the workspace root also deletes socket-cli-base.
+      - name: Check out the revision to scan
+        if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+          persist-credentials: false
       - name: Scan
         if: steps.key.outputs.present == 'true'
         env:
+          SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
           GH_API_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
