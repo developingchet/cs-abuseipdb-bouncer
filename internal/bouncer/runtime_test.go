@@ -586,6 +586,54 @@ func TestRun_MetricsAddrInUse_NoCrash(t *testing.T) {
 	require.NoError(t, b.Run(ctx))
 }
 
+func TestRun_NonLoopbackMetricsAddr_NoCrash(t *testing.T) {
+	lapi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/decisions/stream" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"deleted":null,"new":null}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer lapi.Close()
+
+	cfg := baseRunConfig(t, lapi.URL)
+	// A documentation address is not assigned locally, so the listener
+	// fails to bind after the non-loopback warning is logged.
+	cfg.MetricsAddr = "192.0.2.1:0"
+	b, err := New(cfg, []sink.Sink{&recordingSink{}})
+	require.NoError(t, err)
+	defer b.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	require.NoError(t, b.Run(ctx))
+}
+
+func TestIsLoopbackAddr(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:9090", true},
+		{"127.0.0.2:9090", true},
+		{"[::1]:9090", true},
+		{"localhost:9090", true},
+		{"LOCALHOST:9090", true},
+		{":9090", false},
+		{"0.0.0.0:9090", false},
+		{"[::]:9090", false},
+		{"192.0.2.10:9090", false},
+		{"metrics.example.com:9090", false},
+		{"no-port", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.addr, func(t *testing.T) {
+			assert.Equal(t, tc.want, isLoopbackAddr(tc.addr))
+		})
+	}
+}
+
 func TestProcessDecision_TelemetryAndRecordWarningsBranches(t *testing.T) {
 	store := &recordErrorStore{}
 	cfg := &config.Config{DailyLimit: 1000, CooldownDuration: time.Minute}

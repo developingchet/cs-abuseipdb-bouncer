@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,10 +44,10 @@ type Bouncer struct {
 var closeShutdownTimeout = 5 * time.Second
 
 const (
-	metricsReadTimeout      = 5 * time.Second
-	metricsWriteTimeout     = 10 * time.Second
-	metricsIdleTimeout      = 30 * time.Second
-	retryDequeueBatchSize   = 50
+	metricsReadTimeout    = 5 * time.Second
+	metricsWriteTimeout   = 10 * time.Second
+	metricsIdleTimeout    = 30 * time.Second
+	retryDequeueBatchSize = 50
 )
 
 // New creates a Bouncer and initialises all dependencies.
@@ -102,6 +104,22 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 	}
 
 	return b, nil
+}
+
+// isLoopbackAddr reports whether the listen address addr accepts connections
+// from the local host only. An empty host (":9090"), a wildcard address, any
+// other IP and host names other than "localhost" are reachable from the
+// network.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }
 
 // buildPreQueueFilters constructs the stateless pre-queue filter pipeline
@@ -182,6 +200,11 @@ func (b *Bouncer) Run(ctx context.Context) error {
 
 	// Start metrics / health HTTP server.
 	if b.httpSrv != nil {
+		if !isLoopbackAddr(b.cfg.MetricsAddr) {
+			log.Warn().
+				Str("addr", b.cfg.MetricsAddr).
+				Msg("metrics server is reachable from other hosts and has no authentication; restrict access to the port or set METRICS_ADDR to a loopback address")
+		}
 		go func() {
 			log.Info().Str("addr", b.cfg.MetricsAddr).Msg("metrics server listening")
 			if err := b.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

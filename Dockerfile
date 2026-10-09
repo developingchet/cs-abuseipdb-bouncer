@@ -58,7 +58,11 @@ COPY --from=builder --chown=65532:65532 /data /data
 # Persistent state directory — mount a named volume here.
 VOLUME ["/data"]
 
-# Metrics, /healthz and /readyz HTTP endpoint.
+# Metrics, /healthz and /readyz HTTP endpoint. The binary defaults to
+# 127.0.0.1:9090; inside the container it listens on all interfaces so a
+# published port (or another container) can reach it. Publish it only to
+# 127.0.0.1 or a private network: the endpoints are unauthenticated.
+ENV METRICS_ADDR=:9090
 EXPOSE 9090
 
 # Distroless nonroot image runs as UID 65532 by default.

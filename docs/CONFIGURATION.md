@@ -199,9 +199,11 @@ server disabled it always reports unhealthy. Disable the check in that case
 #### METRICS_ADDR
 
 **Type:** String (host:port)
-**Default:** `:9090`
+**Default:** `127.0.0.1:9090` (the Docker image sets `:9090`)
 
 Address on which the built-in HTTP server listens for Prometheus metrics and Kubernetes health probes. Ignored when `METRICS_ENABLED=false`.
+
+The binary listens on loopback only unless told otherwise. The Docker image sets `METRICS_ADDR=:9090` so that a published port and other containers can reach the server; because environment variables take precedence over `CONFIG_FILE`, change the address in the container through `METRICS_ADDR` rather than `metrics_addr` in YAML. To scrape a native install from another host, set an explicit address such as `0.0.0.0:9090` or a private interface IP.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -219,7 +221,7 @@ They never open `state.db` (the running bouncer holds an exclusive bbolt lock on
 
 Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no port is opened). The `bouncer healthcheck` subcommand derives its probe URL from this value (`:9090` / `0.0.0.0:9090` → `http://127.0.0.1:9090/healthz`).
 
-**Security note:** The endpoints are unauthenticated. The default `:9090` listens on all interfaces inside the container; publish it only to `127.0.0.1` (as the bundled `docker-compose.yml` does) or a private network.
+**Security note:** The endpoints are unauthenticated. The bouncer logs a warning at startup when `METRICS_ADDR` is not a loopback address. In Docker, `:9090` listens on all interfaces inside the container; publish it only to `127.0.0.1` (as the bundled `docker-compose.yml` does) or a private network. For a native install bound to a non-loopback address, restrict the port with a firewall or put an authenticating reverse proxy in front of it.
 
 #### Usage Metrics Telemetry
 

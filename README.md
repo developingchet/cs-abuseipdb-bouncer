@@ -252,7 +252,7 @@ LOG_LEVEL=info                # trace, debug, info, warn, error
 LOG_FORMAT=json               # json or text
 TLS_SKIP_VERIFY=false         # Skip TLS verification (self-signed certs)
 DATA_DIR=/data                # Directory for state.db (mount a named volume here)
-METRICS_ADDR=:9090            # Address for /metrics, /healthz, /readyz (empty = disabled)
+METRICS_ADDR=127.0.0.1:9090   # Address for /metrics, /healthz, /readyz (empty = disabled; the Docker image uses :9090)
 USAGE_METRICS_ENABLED=true    # Enable periodic LAPI /usage-metrics push
 USAGE_METRICS_INTERVAL=30m    # Telemetry push interval (min 10m)
 CONFIG_FILE=                  # Optional path to YAML config file
@@ -313,7 +313,7 @@ The daily quota record resets automatically at UTC midnight. Cooldown entries ar
 
 ## Observability
 
-The HTTP server (enabled by default at `:9090`) exposes three endpoints:
+The HTTP server (enabled by default at `127.0.0.1:9090`; the Docker image listens on `:9090` inside the container) exposes three unauthenticated endpoints, so publish or bind it only to loopback or a private network (the bouncer logs a warning at startup when `METRICS_ADDR` is not a loopback address):
 
 | Endpoint | Description |
 |----------|-------------|

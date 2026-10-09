@@ -49,6 +49,8 @@ services:
       - DATA_DIR=/data
 
       # Metrics / health probes address (set to empty string to disable).
+      # Listens on all container interfaces so the published port below can
+      # reach it; the port is published on the host's loopback only.
       - METRICS_ADDR=${METRICS_ADDR:-:9090}
 
       # Optional path to a YAML config file (alternative to environment vars).
