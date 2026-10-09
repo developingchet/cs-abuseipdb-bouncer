@@ -38,7 +38,7 @@ type quotaRecord struct {
 
 // retryEntry is the JSON shape stored in the retry bucket.
 type retryEntry struct {
-	IP         string `json:"ip"`       // original IP (may differ from key due to sanitization)
+	IP         string `json:"ip"` // original IP (may differ from key due to sanitization)
 	Scenario   string `json:"scenario"`
 	RetryAfter int64  `json:"retry_after"` // Unix timestamp
 	Attempts   int    `json:"attempts"`
@@ -242,6 +242,51 @@ func (s *BoltStore) CooldownConsume(ip string) (bool, error) {
 		return b.Put(key, val)
 	})
 	return allowed, err
+}
+
+// Admit applies the cooldown and quota gates to ip in one bolt.Update, so
+// concurrent workers cannot interleave between the two checks.
+func (s *BoltStore) Admit(ip string) (Admission, error) {
+	key := []byte(sanitizeIP(ip))
+	now := time.Now()
+	today := utcDateString()
+	var result Admission
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		cb := tx.Bucket(bucketCooldown)
+		if data := cb.Get(key); len(data) >= 8 {
+			if now.Unix() < int64(binary.BigEndian.Uint64(data)) {
+				result = AdmitCooldown
+				return nil
+			}
+		}
+
+		qb := tx.Bucket(bucketQuota)
+		rec := decodeQuota(qb.Get(keyToday))
+		if rec.Date != today {
+			rec = quotaRecord{Count: 0, Date: today}
+		}
+		if rec.Count >= s.limit {
+			result = AdmitQuotaExhausted
+			return nil
+		}
+
+		rec.Count++
+		data, err := marshalQuotaRecord(rec)
+		if err != nil {
+			return err
+		}
+		val := make([]byte, 8)
+		binary.BigEndian.PutUint64(val, uint64(now.Add(s.cooldown).Unix()))
+		if err := cb.Put(key, val); err != nil {
+			return err
+		}
+		result = AdmitGranted
+		return qb.Put(keyToday, data)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result, nil
 }
 
 // --- Retry queue ---

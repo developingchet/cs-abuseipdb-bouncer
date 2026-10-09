@@ -1,5 +1,5 @@
 # ---- Builder ----
-FROM golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
+FROM golang:1.27.2-alpine@sha256:85dc1069ac644ea3c527b177303a406eb3358192816cd7f9e5848eb658851673 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=none
@@ -58,7 +58,11 @@ COPY --from=builder --chown=65532:65532 /data /data
 # Persistent state directory — mount a named volume here.
 VOLUME ["/data"]
 
-# Metrics, /healthz and /readyz HTTP endpoint.
+# Metrics, /healthz and /readyz HTTP endpoint. The binary defaults to
+# 127.0.0.1:9090; inside the container it listens on all interfaces so a
+# published port (or another container) can reach it. Publish it only to
+# 127.0.0.1 or a private network: the endpoints are unauthenticated.
+ENV METRICS_ADDR=:9090
 EXPOSE 9090
 
 # Distroless nonroot image runs as UID 65532 by default.

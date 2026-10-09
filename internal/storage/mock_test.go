@@ -330,3 +330,23 @@ func TestMemStore_Retry_ReplacesEntryWithCallerAttempts(t *testing.T) {
 		t.Fatalf("expected Attempts=2, got %d", records[0].Attempts)
 	}
 }
+
+func TestMemStore_Admit(t *testing.T) {
+	m := NewMemStore(1, time.Hour)
+
+	if got, err := m.Admit("203.0.113.42"); err != nil || got != AdmitGranted {
+		t.Fatalf("Admit #1 = %v, %v; want AdmitGranted, nil", got, err)
+	}
+	if got, err := m.Admit("203.0.113.42"); err != nil || got != AdmitCooldown {
+		t.Fatalf("Admit #2 = %v, %v; want AdmitCooldown, nil", got, err)
+	}
+	if got, err := m.Admit("203.0.113.43"); err != nil || got != AdmitQuotaExhausted {
+		t.Fatalf("Admit #3 = %v, %v; want AdmitQuotaExhausted, nil", got, err)
+	}
+	if !m.CooldownAllow("203.0.113.43") {
+		t.Fatal("a decision rejected by the quota must not set a cooldown")
+	}
+	if got := m.QuotaCount(); got != 1 {
+		t.Fatalf("QuotaCount got=%d want=1", got)
+	}
+}

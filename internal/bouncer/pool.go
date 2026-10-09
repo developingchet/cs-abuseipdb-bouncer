@@ -133,30 +133,22 @@ func (p *workerPool) processJob(ctx context.Context, job workerJob) {
 // Retries skip them: their cooldown and quota unit were consumed on the
 // first attempt.
 func (p *workerPool) admit(d *decision.Decision) bool {
-	// 1. CooldownConsume first — so a cooldown hit never wastes quota.
-	allowed, err := p.store.CooldownConsume(d.Value)
+	result, err := p.store.Admit(d.Value)
 	if err != nil {
-		log.Warn().Err(err).Str("ip", d.Value).Msg("cooldown consume error")
+		log.Warn().Err(err).Str("ip", d.Value).Msg("admission error")
 		return false
 	}
-	if !allowed {
+	switch result {
+	case storage.AdmitGranted:
+		return true
+	case storage.AdmitCooldown:
 		metrics.DecisionsSkipped.WithLabelValues("cooldown").Inc()
 		log.Debug().Str("ip", d.Value).Msg("decision filtered (cooldown)")
-		return false
-	}
-
-	// 2. QuotaConsume — only reached if the IP passed the cooldown gate.
-	allowed, err = p.store.QuotaConsume()
-	if err != nil {
-		log.Warn().Err(err).Msg("quota consume error")
-		return false
-	}
-	if !allowed {
+	case storage.AdmitQuotaExhausted:
 		metrics.DecisionsSkipped.WithLabelValues("quota").Inc()
 		log.Debug().Str("ip", d.Value).Msg("decision filtered (quota)")
-		return false
 	}
-	return true
+	return false
 }
 
 // reportTo sends r to one sink and classifies the outcome. It returns whether

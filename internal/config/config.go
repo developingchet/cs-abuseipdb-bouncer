@@ -86,7 +86,7 @@ var defaults = map[string]any{
 	"cooldown_duration":      15 * time.Minute,
 	"data_dir":               "/data",
 	"metrics_enabled":        true,
-	"metrics_addr":           ":9090",
+	"metrics_addr":           "127.0.0.1:9090",
 	"tls_skip_verify":        false,
 	"worker_count":           4,
 	"worker_buffer":          256,

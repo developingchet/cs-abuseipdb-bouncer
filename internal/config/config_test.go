@@ -59,7 +59,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Minute, cfg.CooldownDuration)
 	assert.Equal(t, "/data", cfg.DataDir)
 	assert.True(t, cfg.MetricsEnabled)
-	assert.Equal(t, ":9090", cfg.MetricsAddr)
+	assert.Equal(t, "127.0.0.1:9090", cfg.MetricsAddr)
 	assert.False(t, cfg.TLSSkipVerify)
 	assert.True(t, cfg.UsageMetricsEnabled)
 	assert.Equal(t, 30*time.Minute, cfg.UsageMetricsInterval)
@@ -193,7 +193,7 @@ func TestLoad_MetricsEnabled(t *testing.T) {
 
 		cfg, err := Load()
 		require.NoError(t, err)
-		assert.Equal(t, ":9090", cfg.MetricsAddr)
+		assert.Equal(t, "127.0.0.1:9090", cfg.MetricsAddr)
 	})
 
 	t.Run("unset defaults to enabled", func(t *testing.T) {
@@ -201,7 +201,7 @@ func TestLoad_MetricsEnabled(t *testing.T) {
 
 		cfg, err := Load()
 		require.NoError(t, err)
-		assert.Equal(t, ":9090", cfg.MetricsAddr)
+		assert.Equal(t, "127.0.0.1:9090", cfg.MetricsAddr)
 	})
 }
 

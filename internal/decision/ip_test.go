@@ -94,9 +94,9 @@ func TestIsPrivate(t *testing.T) {
 		{"192.168.1.0/24", true, "private with CIDR"},
 		{"8.8.8.0/24", false, "public with CIDR"},
 
-		// Invalid input
-		{"not-an-ip", false, "invalid IP returns false"},
-		{"", false, "empty string returns false"},
+		// Invalid input fails closed
+		{"not-an-ip", true, "invalid IP is treated as private"},
+		{"", true, "empty string is treated as private"},
 	}
 
 	for _, tt := range tests {
@@ -165,12 +165,6 @@ func TestWhitelistFilter(t *testing.T) {
 			reason:   "Decision value with CIDR notation",
 		},
 		{
-			input:    "not-an-ip",
-			prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")},
-			skip:     false,
-			reason:   "Invalid decision IP",
-		},
-		{
 			input:    "203.0.113.42",
 			prefixes: []netip.Prefix{},
 			skip:     false,
@@ -217,6 +211,59 @@ func TestWhitelistFilter(t *testing.T) {
 			} else {
 				assert.Nil(t, result, "expected decision to pass")
 			}
+		})
+	}
+}
+
+func TestWhitelistFilter_InvalidValueIsSkipped(t *testing.T) {
+	f := WhitelistFilter([]netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")})
+
+	result := f(&Decision{Value: "not-an-ip"})
+	require.NotNil(t, result)
+	assert.Equal(t, "invalid_ip", result.Filter)
+}
+
+func TestParseIP(t *testing.T) {
+	valid := []struct {
+		input string
+		want  string
+	}{
+		{"203.0.113.42", "203.0.113.42"},
+		{" 203.0.113.42\n", "203.0.113.42"},
+		{"203.0.113.42/32", "203.0.113.42"},
+		{"2001:db8::1", "2001:db8::1"},
+		{"2001:DB8:0:0::1", "2001:db8::1"},
+		{"2001:db8::1/128", "2001:db8::1"},
+		{"::ffff:203.0.113.42", "203.0.113.42"},
+		{"::ffff:cb00:712a", "203.0.113.42"},
+		{"::ffff:203.0.113.42/128", "203.0.113.42"},
+	}
+	for _, tt := range valid {
+		t.Run(tt.input, func(t *testing.T) {
+			addr, err := ParseIP(tt.input)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, addr.String())
+		})
+	}
+
+	invalid := []string{
+		"",
+		"not-an-ip",
+		"203.0.113",
+		"203.0.113.256",
+		"203.0.113.42:80",
+		"203.0.113.0/24",
+		"2001:db8::/64",
+		"203.0.113.42/33",
+		"203.0.113.42/",
+		"/32",
+		"fe80::1%eth0",
+		"203.0.113.42 198.51.100.1",
+	}
+	for _, input := range invalid {
+		t.Run("invalid "+input, func(t *testing.T) {
+			_, err := ParseIP(input)
+			assert.Error(t, err)
 		})
 	}
 }

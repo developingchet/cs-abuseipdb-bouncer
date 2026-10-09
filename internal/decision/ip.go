@@ -29,20 +29,41 @@ var privateRanges = []netip.Prefix{
 	netip.MustParsePrefix("ff00::/8"),       // IPv6 multicast
 }
 
+// ParseIP parses a decision value as a single IP address and returns it in
+// canonical form: IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are unmapped.
+// A single-host prefix (/32 for IPv4, /128 for IPv6) is accepted as its
+// address. Wider prefixes, zoned addresses and anything else that is not an
+// IP address are rejected: an IP-scoped decision names exactly one host, and
+// that is what gets reported.
+func ParseIP(value string) (netip.Addr, error) {
+	value = strings.TrimSpace(value)
+	if strings.IndexByte(value, '/') != -1 {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return netip.Addr{}, fmt.Errorf("value=%q is not an IP address", value)
+		}
+		if !prefix.IsSingleIP() {
+			return netip.Addr{}, fmt.Errorf("value=%q is a network, not a single IP address", value)
+		}
+		return prefix.Addr().Unmap(), nil
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil || addr.Zone() != "" {
+		return netip.Addr{}, fmt.Errorf("value=%q is not an IP address", value)
+	}
+	return addr.Unmap(), nil
+}
+
 // IsPrivate returns true if the IP address falls within a private or reserved range.
 // Accepts bare IPs or CIDR notation (the prefix length is stripped before checking).
-// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are checked as IPv4.
+// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are checked as IPv4. A value
+// that does not parse as an IP address is treated as private, so it is never
+// reported.
 func IsPrivate(ipStr string) bool {
-	// Strip CIDR notation if present
-	if idx := strings.IndexByte(ipStr, '/'); idx != -1 {
-		ipStr = ipStr[:idx]
+	addr, ok := stripAndParse(ipStr)
+	if !ok {
+		return true
 	}
-
-	addr, err := netip.ParseAddr(ipStr)
-	if err != nil {
-		return false
-	}
-	addr = addr.Unmap()
 
 	for _, prefix := range privateRanges {
 		if prefix.Contains(addr) {
@@ -55,17 +76,13 @@ func IsPrivate(ipStr string) bool {
 // WhitelistFilter returns a Filter that skips decisions whose IP falls within
 // any of the provided prefixes. Call it conditionally (only when prefixes is
 // non-empty) so the hot path has zero overhead when no whitelist is configured.
+// A value that does not parse as an IP address is skipped as well.
 func WhitelistFilter(prefixes []netip.Prefix) Filter {
 	return func(d *Decision) *SkipReason {
-		ipStr := d.Value
-		if idx := strings.IndexByte(ipStr, '/'); idx != -1 {
-			ipStr = ipStr[:idx]
+		addr, ok := stripAndParse(d.Value)
+		if !ok {
+			return invalidIP(fmt.Sprintf("value=%q is not an IP address", d.Value))
 		}
-		addr, err := netip.ParseAddr(ipStr)
-		if err != nil {
-			return nil // unparseable — let ValueRequired handle it
-		}
-		addr = addr.Unmap() // normalise IPv4-in-IPv6
 		for _, pfx := range prefixes {
 			if pfx.Contains(addr) {
 				return &SkipReason{Filter: "whitelist", Detail: fmt.Sprintf("ip=%s matches %s", d.Value, pfx)}
@@ -73,4 +90,18 @@ func WhitelistFilter(prefixes []netip.Prefix) Filter {
 		}
 		return nil
 	}
+}
+
+// stripAndParse drops any CIDR suffix from value and parses the remaining
+// address, unmapping IPv4-mapped IPv6. It reports false when the value is
+// not an IP address.
+func stripAndParse(value string) (netip.Addr, bool) {
+	if idx := strings.IndexByte(value, '/'); idx != -1 {
+		value = value[:idx]
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
 }

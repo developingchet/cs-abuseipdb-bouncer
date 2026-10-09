@@ -123,6 +123,74 @@ func TestCooldownConsume_DifferentIPs(t *testing.T) {
 	}
 }
 
+// TestAdmit_ConcurrentUniqueIPs fires 50 goroutines with unique IPs against a
+// store with limit=10. Exactly 10 are admitted and only those leave a
+// cooldown entry.
+func TestAdmit_ConcurrentUniqueIPs(t *testing.T) {
+	const goroutines = 50
+	const limit = 10
+
+	store := openTestStore(t, limit, time.Hour)
+
+	var wg sync.WaitGroup
+	var granted atomic.Int64
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(ip string) {
+			defer wg.Done()
+			got, err := store.Admit(ip)
+			if err != nil {
+				t.Errorf("Admit(%s) error: %v", ip, err)
+				return
+			}
+			if got == AdmitGranted {
+				granted.Add(1)
+			}
+		}(fmt.Sprintf("203.0.113.%d", i+1))
+	}
+	wg.Wait()
+
+	if got := granted.Load(); got != limit {
+		t.Errorf("expected %d admitted, got %d", limit, got)
+	}
+	if got := cooldownKeyCount(t, store); got != limit {
+		t.Errorf("expected %d cooldown entries, got %d", limit, got)
+	}
+}
+
+// TestAdmit_ConcurrentSameIP fires 20 goroutines for the same IP. Exactly one
+// is admitted and the cooldown hits consume no quota.
+func TestAdmit_ConcurrentSameIP(t *testing.T) {
+	const goroutines = 20
+
+	store := openTestStore(t, 1000, time.Hour)
+
+	var wg sync.WaitGroup
+	var granted atomic.Int64
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := store.Admit("203.0.113.99")
+			if err != nil {
+				t.Errorf("Admit error: %v", err)
+				return
+			}
+			if got == AdmitGranted {
+				granted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := granted.Load(); got != 1 {
+		t.Errorf("expected exactly 1 admitted, got %d", got)
+	}
+	if got := store.QuotaCount(); got != 1 {
+		t.Errorf("QuotaCount = %d, want 1", got)
+	}
+}
+
 // TestDBPath verifies BoltStore returns a non-empty path.
 func TestDBPath(t *testing.T) {
 	store := openTestStore(t, 100, time.Minute)

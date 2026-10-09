@@ -200,21 +200,15 @@ func TestWorkerPool_GracefulShutdown(t *testing.T) {
 	}
 }
 
-type cooldownErrStore struct{ *storage.MemStore }
+type admitErrStore struct{ *storage.MemStore }
 
-func (s *cooldownErrStore) CooldownConsume(string) (bool, error) {
-	return false, errors.New("cooldown consume failed")
+func (s *admitErrStore) Admit(string) (storage.Admission, error) {
+	return 0, errors.New("admit failed")
 }
 
-type quotaErrStore struct{ *storage.MemStore }
-
-func (s *quotaErrStore) QuotaConsume() (bool, error) {
-	return false, errors.New("quota consume failed")
-}
-
-func TestWorkerPool_ProcessJob_CooldownConsumeError(t *testing.T) {
+func TestWorkerPool_ProcessJob_AdmitError(t *testing.T) {
 	base := storage.NewMemStore(100, time.Minute)
-	store := &cooldownErrStore{MemStore: base}
+	store := &admitErrStore{MemStore: base}
 	cs := &countingSink{}
 
 	pool := &workerPool{
@@ -224,23 +218,68 @@ func TestWorkerPool_ProcessJob_CooldownConsumeError(t *testing.T) {
 	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.200")})
 
 	if got := cs.count(); got != 0 {
-		t.Fatalf("expected no reports on cooldown consume error, got %d", got)
+		t.Fatalf("expected no reports on admission error, got %d", got)
 	}
 }
 
-func TestWorkerPool_ProcessJob_QuotaConsumeError(t *testing.T) {
-	base := storage.NewMemStore(100, time.Minute)
-	store := &quotaErrStore{MemStore: base}
-	cs := &countingSink{}
+// TestWorkerPool_ExhaustedQuotaSetsNoCooldown floods unique IPs after the
+// daily quota is used up. None of them may be reported or leave a cooldown
+// entry behind, so the state database does not grow with rejected decisions.
+func TestWorkerPool_ExhaustedQuotaSetsNoCooldown(t *testing.T) {
+	const limit = 3
+	const flood = 200
 
-	pool := &workerPool{
-		store: store,
-		sinks: []sink.Sink{cs},
+	store := storage.NewMemStore(limit, time.Hour)
+	for i := 0; i < limit; i++ {
+		ok, err := store.QuotaConsume()
+		if err != nil || !ok {
+			t.Fatalf("QuotaConsume #%d = %v, %v; want true, nil", i+1, ok, err)
+		}
 	}
-	pool.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.201")})
+	cs := &countingSink{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(ctx, 8, flood, store, []sink.Sink{cs}, nil, nil)
+	for i := 0; i < flood; i++ {
+		pool.submit(workerJob{d: makeDecision(uniqueIP(i))})
+	}
+	pool.stop()
 
 	if got := cs.count(); got != 0 {
-		t.Fatalf("expected no reports on quota consume error, got %d", got)
+		t.Errorf("expected no reports with the quota exhausted, got %d", got)
+	}
+	for i := 0; i < flood; i++ {
+		if !store.CooldownAllow(uniqueIP(i)) {
+			t.Fatalf("cooldown recorded for %s although the quota was exhausted", uniqueIP(i))
+		}
+	}
+	if got := store.QuotaCount(); got != limit {
+		t.Errorf("QuotaCount = %d, want %d", got, limit)
+	}
+}
+
+// TestWorkerPool_CooldownHitConsumesNoQuota submits the same IP many times
+// concurrently and checks that only the admitted decision consumed quota.
+func TestWorkerPool_CooldownHitConsumesNoQuota(t *testing.T) {
+	const total = 100
+
+	store := storage.NewMemStore(total, time.Hour)
+	cs := &countingSink{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool := newWorkerPool(ctx, 8, total, store, []sink.Sink{cs}, nil, nil)
+	for i := 0; i < total; i++ {
+		pool.submit(workerJob{d: makeDecision("203.0.113.42")})
+	}
+	pool.stop()
+
+	if got := cs.count(); got != 1 {
+		t.Errorf("expected exactly 1 report, got %d", got)
+	}
+	if got := store.QuotaCount(); got != 1 {
+		t.Errorf("QuotaCount = %d, want 1", got)
 	}
 }
 

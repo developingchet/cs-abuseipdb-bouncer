@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,10 +44,10 @@ type Bouncer struct {
 var closeShutdownTimeout = 5 * time.Second
 
 const (
-	metricsReadTimeout      = 5 * time.Second
-	metricsWriteTimeout     = 10 * time.Second
-	metricsIdleTimeout      = 30 * time.Second
-	retryDequeueBatchSize   = 50
+	metricsReadTimeout    = 5 * time.Second
+	metricsWriteTimeout   = 10 * time.Second
+	metricsIdleTimeout    = 30 * time.Second
+	retryDequeueBatchSize = 50
 )
 
 // New creates a Bouncer and initialises all dependencies.
@@ -104,13 +106,31 @@ func New(cfg *config.Config, sinks []sink.Sink) (*Bouncer, error) {
 	return b, nil
 }
 
+// isLoopbackAddr reports whether the listen address addr accepts connections
+// from the local host only. An empty host (":9090"), a wildcard address, any
+// other IP and host names other than "localhost" are reachable from the
+// network.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
+}
+
 // buildPreQueueFilters constructs the stateless pre-queue filter pipeline
-// (filters 1–7). Quota and cooldown checks are omitted here because they are
+// (filters 1–8). Quota and cooldown checks are omitted here because they are
 // handled atomically inside the worker pool.
 //
 // Pipeline ordering rationale: stateless/cheap filters (action, scenario,
-// origin, scope, value, private_ip, whitelist, min_duration) run first so
-// that the majority of decisions are rejected before any storage I/O occurs.
+// origin, scope, value, invalid_ip, private_ip, whitelist, min_duration) run
+// first so that the majority of decisions are rejected before any storage I/O
+// occurs. invalid_ip also canonicalises Value, so it precedes every filter and
+// stage that reads Value as an address.
 // Quota and cooldown are intentionally last in buildFilters because they
 // involve storage reads and must only be charged for decisions that have
 // already passed all stateless gates.
@@ -121,6 +141,7 @@ func buildPreQueueFilters(cfg *config.Config) []decision.Filter {
 		decision.OriginAllow("crowdsec", "cscli"),
 		decision.ScopeAllow("ip"),
 		decision.ValueRequired(),
+		decision.IPValue(),
 		decision.PrivateIPReject(),
 	}
 	if len(cfg.Whitelist) > 0 {
@@ -139,6 +160,7 @@ func buildFilters(cfg *config.Config, store storage.Store) []decision.Filter {
 		decision.OriginAllow("crowdsec", "cscli"),
 		decision.ScopeAllow("ip"),
 		decision.ValueRequired(),
+		decision.IPValue(),
 		decision.PrivateIPReject(),
 		decision.MinDurationFilter(cfg.MinDuration),
 		quotaFilter(store),
@@ -182,6 +204,11 @@ func (b *Bouncer) Run(ctx context.Context) error {
 
 	// Start metrics / health HTTP server.
 	if b.httpSrv != nil {
+		if !isLoopbackAddr(b.cfg.MetricsAddr) {
+			log.Warn().
+				Str("addr", b.cfg.MetricsAddr).
+				Msg("metrics server is reachable from other hosts and has no authentication; restrict access to the port or set METRICS_ADDR to a loopback address")
+		}
 		go func() {
 			log.Info().Str("addr", b.cfg.MetricsAddr).Msg("metrics server listening")
 			if err := b.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

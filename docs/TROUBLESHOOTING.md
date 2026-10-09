@@ -158,6 +158,7 @@ Look for `"message":"decision filtered (pre-queue)"` and `"decision filtered (co
 | `origin` | CAPI or lists origin | Expected -- community blocklist IPs are not re-reported |
 | `scope` | Range, ASN, or country scope | AbuseIPDB only accepts single IPs |
 | `value` | Empty IP value | Indicates a malformed decision in CrowdSec |
+| `invalid_ip` | Value is not a single IP address (malformed, a network wider than /32 or /128, or a zoned IPv6 address) | Indicates a malformed decision in CrowdSec; nothing is reported and no quota is used |
 | `private_ip` | Private/reserved IP range | Expected -- private IPs are not reported |
 | `whitelist` | IP is in `IP_WHITELIST` | Expected — trusted range you configured |
 | `min_duration` | Decision duration is below ABUSEIPDB_MIN_DURATION | Lower or disable ABUSEIPDB_MIN_DURATION |

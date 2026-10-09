@@ -199,9 +199,11 @@ server disabled it always reports unhealthy. Disable the check in that case
 #### METRICS_ADDR
 
 **Type:** String (host:port)
-**Default:** `:9090`
+**Default:** `127.0.0.1:9090` (the Docker image sets `:9090`)
 
 Address on which the built-in HTTP server listens for Prometheus metrics and Kubernetes health probes. Ignored when `METRICS_ENABLED=false`.
+
+The binary listens on loopback only unless told otherwise. The Docker image sets `METRICS_ADDR=:9090` so that a published port and other containers can reach the server; because environment variables take precedence over `CONFIG_FILE`, change the address in the container through `METRICS_ADDR` rather than `metrics_addr` in YAML. To scrape a native install from another host, set an explicit address such as `0.0.0.0:9090` or a private interface IP.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -219,7 +221,7 @@ They never open `state.db` (the running bouncer holds an exclusive bbolt lock on
 
 Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no port is opened). The `bouncer healthcheck` subcommand derives its probe URL from this value (`:9090` / `0.0.0.0:9090` → `http://127.0.0.1:9090/healthz`).
 
-**Security note:** The endpoints are unauthenticated. The default `:9090` listens on all interfaces inside the container; publish it only to `127.0.0.1` (as the bundled `docker-compose.yml` does) or a private network.
+**Security note:** The endpoints are unauthenticated. The bouncer logs a warning at startup when `METRICS_ADDR` is not a loopback address. In Docker, `:9090` listens on all interfaces inside the container; publish it only to `127.0.0.1` (as the bundled `docker-compose.yml` does) or a private network. For a native install bound to a non-loopback address, restrict the port with a firewall or put an authenticating reverse proxy in front of it.
 
 #### Usage Metrics Telemetry
 
@@ -264,7 +266,7 @@ log_level: info
 
 Per-IP suppression window. After a report is sent for an IP, subsequent decisions for that IP are silently dropped until this window expires.
 
-The default matches AbuseIPDB's server-side deduplication window (15 minutes). AbuseIPDB rejects a second report of the same IP within that window with HTTP 429 ("You can only report the same IP address … once in 15 minutes"); the bouncer recognises this as a duplicate and drops it without retrying (`cs_abuseipdb_decisions_skipped_total{filter="duplicate"}`). Values below 15m therefore only produce extra rejected calls. Cooldown state is stored atomically in bbolt (`CooldownConsume` is a single serialised transaction) — concurrent workers cannot double-report the same IP.
+The default matches AbuseIPDB's server-side deduplication window (15 minutes). AbuseIPDB rejects a second report of the same IP within that window with HTTP 429 ("You can only report the same IP address … once in 15 minutes"); the bouncer recognises this as a duplicate and drops it without retrying (`cs_abuseipdb_decisions_skipped_total{filter="duplicate"}`). Values below 15m therefore only produce extra rejected calls. Cooldown state is stored atomically in bbolt (`Admit` checks the cooldown and the quota in a single serialised transaction) — concurrent workers cannot double-report the same IP.
 
 Expired entries are pruned from `state.db` by the background janitor (see `JANITOR_INTERVAL`).
 

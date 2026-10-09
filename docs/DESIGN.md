@@ -136,7 +136,7 @@ Decisions pass through two ordered pipelines:
 
 ### Pre-Queue Pipeline (main event loop — stateless, no I/O)
 
-Seven filters run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
+Eight filters run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
 
 ```
 Decision from LAPI
@@ -158,6 +158,9 @@ Decision from LAPI
        |
        v
 5. ValueRequired()              -- reject empty value field
+   IPValue()                    -- reject anything but one IP address;
+                                   canonicalise the value (unmap
+                                   ::ffff:a.b.c.d, drop /32 and /128)
        |
        v
 6. PrivateIPReject()            -- reject RFC1918, loopback, CGNAT, etc.
@@ -171,24 +174,25 @@ Decision from LAPI
 
 ### Worker-Side Checks (atomic bbolt transactions)
 
-Each worker dequeues a job and runs two atomic store operations before calling any sink:
+Each worker dequeues a job and runs one atomic store operation, `Admit(ip)`, before calling any sink. Both checks share a single `bolt.Update`:
 
 ```
 Worker receives job
        |
        v
-8. CooldownConsume(ip)          -- single bolt.Update:
-                                   read expiry, check, set, commit
-       |  false → skip (no quota consumed)
+8. cooldown check               -- read expiry for ip
+       |  active → skip (nothing written, no quota consumed)
        v
-9. QuotaConsume()               -- single bolt.Update:
-                                   read count, check, increment, commit
-       |  false → skip
+9. quota check                  -- read today's count
+       |  exhausted → skip (nothing written)
+       v
+   set cooldown expiry, increment count, commit
+       |
        v
    AbuseIPDB sink
 ```
 
-The order (cooldown before quota) is intentional: a cooldown hit does not consume a quota unit.
+The order (cooldown before quota) is intentional: a cooldown hit does not consume a quota unit. Writing only after both checks pass means that once the daily quota is exhausted, new IPs add no cooldown entries, so a flood of unique decisions cannot grow `state.db`.
 
 ### Why Two Pipelines?
 
@@ -269,9 +273,9 @@ A decision is attempted at most 6 times (`maxDeliveryAttempts`); the attempt cou
 
 ### Known Limit: bbolt Write Serialisation
 
-bbolt serialises all write transactions — only one `db.Update` runs at a time. Under very high concurrency this means `CooldownConsume` and `QuotaConsume` calls from different workers queue behind each other. In practice, the AbuseIPDB HTTP round-trip (100 ms–15 s) dominates worker latency by orders of magnitude, so bbolt is never the bottleneck at realistic worker counts (default 4, max 64).
+bbolt serialises all write transactions — only one `db.Update` runs at a time. Under very high concurrency this means `Admit` calls from different workers queue behind each other. In practice, the AbuseIPDB HTTP round-trip (100 ms–15 s) dominates worker latency by orders of magnitude, so bbolt is never the bottleneck at realistic worker counts (default 4, max 64).
 
-If bbolt serialisation does become a bottleneck at very high scale, the recommended path is to replace `BoltStore` with a Redis-backed implementation of the `Store` interface — the interface boundary (`QuotaConsume`, `CooldownConsume`) is already designed for atomic operations.
+If bbolt serialisation does become a bottleneck at very high scale, the recommended path is to replace `BoltStore` with a Redis-backed implementation of the `Store` interface — the interface boundary (`Admit`) is already designed for atomic operations.
 
 ### Response Buffer Pooling
 
@@ -318,17 +322,18 @@ State is stored in a single `state.db` file using [bbolt](https://github.com/etc
 {"count": 42, "date": "2026-02-17"}
 ```
 
-The date is checked inside every `QuotaConsume` transaction. If the stored date differs from the current UTC date, the counter is reset to zero before the check proceeds. The entire read-check-increment sequence runs in a single `bolt.Update` (serialised write transaction), making the operation atomic and race-free even with multiple concurrent workers.
+The date is checked inside every `Admit` transaction. If the stored date differs from the current UTC date, the counter is reset to zero before the check proceeds. The entire read-check-increment sequence runs in a single `bolt.Update` (serialised write transaction), making the operation atomic and race-free even with multiple concurrent workers.
 
 ### Per-IP Cooldown (`cooldown` bucket)
 
 **Key:** sanitised IP string (e.g. `203_0_113_42` for IPv4, `2001_db8__1` for IPv6 — colons and dots replaced with underscores)
 **Value:** big-endian int64 Unix timestamp of expiry (8 bytes)
 
-`CooldownConsume(ip)` runs in a single `bolt.Update`:
+`Admit(ip)` runs in a single `bolt.Update`:
 1. Read the stored expiry for `ip`
-2. If the current time is before expiry, return `(false, nil)` — cooldown active, do not report
-3. Otherwise, write the new expiry (`now + cooldownDuration`) and return `(true, nil)`
+2. If the current time is before expiry, return `AdmitCooldown` — cooldown active, do not report
+3. Read today's quota record; if it is at the limit, return `AdmitQuotaExhausted` without writing anything
+4. Otherwise, increment the quota count, write the new expiry (`now + cooldownDuration`) and return `AdmitGranted`
 
 This atomic check-and-set eliminates the TOCTOU race present in the earlier separate `CooldownAllow()` + `CooldownRecord()` design, where two concurrent workers could both observe "no cooldown" and both proceed to report the same IP.
 
@@ -449,6 +454,8 @@ All packages have `_test.go` files with table-driven tests. External dependencie
 | `TestQuotaConsume_Concurrent` | 50 goroutines, limit=10 | Exactly 10 succeed |
 | `TestCooldownConsume_SameIP` | 20 goroutines, 1 IP | Exactly 1 succeeds |
 | `TestCooldownConsume_DifferentIPs` | 20 goroutines, 20 IPs | All 20 succeed |
+| `TestAdmit_ConcurrentUniqueIPs` | 50 goroutines, 50 IPs, limit=10 | Exactly 10 admitted, 10 cooldown entries |
+| `TestAdmit_ConcurrentSameIP` | 20 goroutines, 1 IP | Exactly 1 admitted, 1 quota unit used |
 
 All tests are run with `-race` in CI.
 
@@ -461,6 +468,8 @@ All tests are run with `-race` in CI.
 | `TestWorkerPool_10kDecisions` | 10k decisions, 8 workers — no panic, deadlock, or race |
 | `TestWorkerPool_QuotaNotExceeded` | 100 decisions, limit=10 — sink receives ≤ 10 reports |
 | `TestWorkerPool_CooldownAtomicity` | 200 decisions for 1 IP — sink receives exactly 1 report |
+| `TestWorkerPool_CooldownHitConsumesNoQuota` | 100 decisions for 1 IP — exactly 1 quota unit used |
+| `TestWorkerPool_ExhaustedQuotaSetsNoCooldown` | 200 unique IPs after the quota is used up — no reports, no cooldown entries |
 | `TestWorkerPool_Backpressure` | Buffer=10, flood 3× — drops observed, no deadlock |
 | `TestWorkerPool_GracefulShutdown` | Cancel mid-flight — `stop()` returns within 5s |
 
