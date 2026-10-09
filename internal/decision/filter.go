@@ -102,9 +102,33 @@ func ValueRequired() Filter {
 	}
 }
 
-// PrivateIPReject rejects decisions targeting private or reserved IP ranges.
+// IPValue rejects decisions whose value is not a single IP address (see
+// ParseIP) and replaces Value with the canonical address, so the private
+// range and whitelist checks, the cooldown key and the report all see the
+// same address. It must run before any filter or stage that reads Value as
+// an IP.
+func IPValue() Filter {
+	return func(d *Decision) *SkipReason {
+		addr, err := ParseIP(d.Value)
+		if err != nil {
+			return invalidIP(err.Error())
+		}
+		d.Value = addr.String()
+		return nil
+	}
+}
+
+func invalidIP(detail string) *SkipReason {
+	return &SkipReason{"invalid_ip", detail}
+}
+
+// PrivateIPReject rejects decisions targeting private or reserved IP ranges,
+// and decisions whose value is not an IP address.
 func PrivateIPReject() Filter {
 	return func(d *Decision) *SkipReason {
+		if _, ok := stripAndParse(d.Value); !ok {
+			return invalidIP(fmt.Sprintf("value=%q is not an IP address", d.Value))
+		}
 		if IsPrivate(d.Value) {
 			return &SkipReason{"private_ip", fmt.Sprintf("ip=%s is private/reserved", d.Value)}
 		}

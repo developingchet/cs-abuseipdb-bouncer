@@ -70,7 +70,7 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │    2. exclude impossible-travel scenarios           │
 │    3. origin = crowdsec / cscli                     │
 │    4. scope = ip                                    │
-│    5. value not empty                               │
+│    5. value is a single valid IP address            │
 │    6. reject private IPs                            │
 │    7. min duration check                            │
 │                                                     │

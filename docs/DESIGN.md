@@ -136,7 +136,7 @@ Decisions pass through two ordered pipelines:
 
 ### Pre-Queue Pipeline (main event loop — stateless, no I/O)
 
-Seven filters run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
+Eight filters run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
 
 ```
 Decision from LAPI
@@ -158,6 +158,9 @@ Decision from LAPI
        |
        v
 5. ValueRequired()              -- reject empty value field
+   IPValue()                    -- reject anything but one IP address;
+                                   canonicalise the value (unmap
+                                   ::ffff:a.b.c.d, drop /32 and /128)
        |
        v
 6. PrivateIPReject()            -- reject RFC1918, loopback, CGNAT, etc.

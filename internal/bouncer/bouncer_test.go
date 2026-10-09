@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -147,6 +148,82 @@ func TestProcessDecision_FiltersRangeScope(t *testing.T) {
 	)
 
 	assert.Empty(t, fs.reports)
+}
+
+func TestProcessDecision_MalformedValueTouchesNoState(t *testing.T) {
+	b, fs := newTestBouncer(t, 1000, time.Minute)
+
+	for _, v := range []string{"not-an-ip", "203.0.113.0/24", "203.0.113.256", "fe80::1%eth0"} {
+		b.processDecision(
+			context.Background(),
+			strPtr(v),
+			strPtr("crowdsec"),
+			strPtr("crowdsecurity/ssh-bf"),
+			strPtr("Ip"),
+			strPtr("24h"),
+			"add",
+		)
+		assert.True(t, b.store.CooldownAllow(v), "no cooldown for %q", v)
+	}
+
+	assert.Empty(t, fs.reports)
+	assert.Equal(t, 0, b.store.QuotaCount())
+}
+
+func TestProcessDecision_ReportsCanonicalAddress(t *testing.T) {
+	b, fs := newTestBouncer(t, 1000, time.Minute)
+
+	b.processDecision(
+		context.Background(),
+		strPtr("::ffff:203.0.113.42"),
+		strPtr("crowdsec"),
+		strPtr("crowdsecurity/ssh-bf"),
+		strPtr("Ip"),
+		strPtr("24h"),
+		"add",
+	)
+
+	require.Len(t, fs.reports, 1)
+	assert.Equal(t, "203.0.113.42", fs.reports[0].IP)
+	assert.False(t, b.store.CooldownAllow("203.0.113.42"))
+}
+
+// TestHandleStreamBatch_MalformedValuesNeverReachWorkers sends malformed
+// values through the pre-queue pipeline and worker pool. They must not be
+// reported or consume cooldown or quota; a valid IPv4-mapped address in the
+// same batch is reported in its IPv4 form.
+func TestHandleStreamBatch_MalformedValuesNeverReachWorkers(t *testing.T) {
+	store := storage.NewMemStore(1000, time.Hour)
+	fs := &fakeSink{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := &config.Config{}
+	b := &Bouncer{
+		cfg:        cfg,
+		preFilters: buildPreQueueFilters(cfg),
+		store:      store,
+		pool:       newWorkerPool(ctx, 1, 16, store, []sink.Sink{fs}, nil, nil),
+	}
+
+	malformed := []string{"not-an-ip", "198.51.100.0/24", "999.1.1.1", "203.0.113.42:22"}
+	values := append([]string{"::ffff:203.0.113.42"}, malformed...)
+	batch := models.GetDecisionsResponse{}
+	for i := range values {
+		origin, scenario, scope, dur := "crowdsec", "crowdsecurity/ssh-bf", "Ip", "24h"
+		batch = append(batch, &models.Decision{
+			Value: &values[i], Origin: &origin, Scenario: &scenario, Scope: &scope, Duration: &dur,
+		})
+	}
+	b.handleStreamBatch(&models.DecisionsStreamResponse{New: batch})
+	b.pool.stop()
+
+	require.Len(t, fs.reports, 1)
+	assert.Equal(t, "203.0.113.42", fs.reports[0].IP)
+	assert.Equal(t, 1, store.QuotaCount())
+	for _, v := range malformed {
+		assert.True(t, store.CooldownAllow(v), "no cooldown for %q", v)
+	}
 }
 
 func TestProcessDecision_FiltersImpossibleTravel(t *testing.T) {

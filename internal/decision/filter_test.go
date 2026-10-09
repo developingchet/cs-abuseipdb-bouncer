@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestActionFilter(t *testing.T) {
@@ -168,4 +169,34 @@ func TestPipeline(t *testing.T) {
 		assert.NotNil(t, reason)
 		assert.Equal(t, "private_ip", reason.Filter)
 	})
+}
+
+func TestIPValue(t *testing.T) {
+	f := IPValue()
+
+	t.Run("canonicalises the value", func(t *testing.T) {
+		d := &Decision{Value: "::ffff:203.0.113.42"}
+		require.Nil(t, f(d))
+		assert.Equal(t, "203.0.113.42", d.Value)
+
+		d = &Decision{Value: "2001:DB8::1/128"}
+		require.Nil(t, f(d))
+		assert.Equal(t, "2001:db8::1", d.Value)
+	})
+
+	t.Run("rejects values that are not one IP address", func(t *testing.T) {
+		for _, v := range []string{"not-an-ip", "203.0.113.0/24", "999.1.1.1", "fe80::1%eth0"} {
+			d := &Decision{Value: v}
+			reason := f(d)
+			require.NotNil(t, reason, v)
+			assert.Equal(t, "invalid_ip", reason.Filter)
+			assert.Equal(t, v, d.Value, "a rejected value is left unchanged")
+		}
+	})
+}
+
+func TestPrivateIPReject_InvalidValue(t *testing.T) {
+	reason := PrivateIPReject()(&Decision{Value: "not-an-ip"})
+	require.NotNil(t, reason)
+	assert.Equal(t, "invalid_ip", reason.Filter)
 }
