@@ -393,6 +393,10 @@ To run tests directly (requires Go 1.27+; `-race` also needs a C compiler / CGO)
 go test -race ./... -count=1 -timeout=120s
 ```
 
+## Upgrade notes
+
+**Metrics listener on loopback by default.** `METRICS_ADDR` now defaults to `127.0.0.1:9090` instead of `:9090`. The Docker image sets `METRICS_ADDR=:9090`, so container deployments are unaffected. A native install (systemd, Windows) that is scraped by Prometheus from another host stops answering that scraper after the upgrade, and no warning is logged because the new default is a loopback address. Set `METRICS_ADDR` explicitly, for example `0.0.0.0:9090` or the private interface address the scraper uses, and keep the port behind a firewall since the endpoints are unauthenticated.
+
 ## Migration from v1.x
 
 | Aspect | v1.x | v2.0 |
