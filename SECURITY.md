@@ -53,7 +53,7 @@ The Docker image runs with:
 
 - API keys are loaded exclusively from environment variables
 - Keys are never written to disk or baked into the image
-- A `RedactWriter` wraps stderr and automatically replaces 80-character hex API keys and `Bearer <token>` values with `[REDACTED-API-KEY]` / `bearer [REDACTED]` before they can appear in log output
+- A `RedactWriter` wraps stderr and automatically replaces 80-character hex API keys (the whole surrounding hex run), `Bearer <token>` values and `X-Api-Key:` header values with `[REDACTED-API-KEY]` / `bearer [REDACTED]` / `X-Api-Key: [REDACTED]` before they can appear in log output
 
 ### Network
 

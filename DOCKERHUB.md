@@ -73,7 +73,7 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 |----------|---------|-------------|
 | `DATA_DIR` | `/data` | Directory for `state.db` (bbolt database). Mount a named volume here. |
 | `METRICS_ENABLED` | `true` | Set to `false` to disable the `/metrics`, `/healthz`, `/readyz` HTTP server entirely (no port opened). Takes precedence over `METRICS_ADDR`. The image `HEALTHCHECK` needs this server — disable the healthcheck too if you turn it off. |
-| `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. Ignored when `METRICS_ENABLED=false`. Set to empty string to disable. |
+| `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. The image sets `:9090`; the binary on its own defaults to `127.0.0.1:9090`. A warning is logged at startup when the address is not loopback, since the endpoints are unauthenticated — publish the port only to `127.0.0.1` or a private network. Ignored when `METRICS_ENABLED=false`. Set to empty string to disable. |
 | `CONFIG_FILE` | _(none)_ | Optional path to a YAML config file (alternative / supplement to env vars). |
 | `ABUSEIPDB_DAILY_LIMIT` | `1000` | Daily report quota (free=1000, webmaster=3000, premium=50000). |
 | `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs). Uses one call from the separate `/check` daily quota per decision. |
@@ -166,7 +166,7 @@ If you prefer not to download the file, simply omit that line — `cap_drop: ALL
 
 ### Log Redaction
 
-API keys and Bearer tokens are automatically redacted from all log output before they reach stderr. The regex patterns match 80-character hex strings (AbuseIPDB key format), `Bearer <token>` values and `X-Api-Key:` header values (CrowdSec LAPI key).
+API keys and Bearer tokens are automatically redacted from all log output before they reach stderr. The regex patterns match runs of 80 or more hex characters (AbuseIPDB key format; the whole run is replaced so no part of a key leaks), `Bearer <token>` values and `X-Api-Key:` header values (CrowdSec LAPI key).
 
 ### Supply-Chain Verification
 
