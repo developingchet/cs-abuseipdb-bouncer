@@ -107,10 +107,11 @@ The container runs as UID 65532 (the distroless nonroot user). It writes only to
 
 ### Secret Handling
 
-API keys are loaded exclusively from environment variables. They are never written to disk and are not baked into the image. A `RedactWriter` (`internal/logger/redact.go`) wraps stderr and applies two regular expressions before any log line reaches the output:
+API keys are loaded exclusively from environment variables. They are never written to disk and are not baked into the image. A `RedactWriter` (`internal/logger/redact.go`) wraps stderr and applies three regular expressions before any log line reaches the output:
 
-1. `[A-Fa-f0-9]{80}` → `[REDACTED-API-KEY]` — matches the 80-character hex format used by both AbuseIPDB and CrowdSec API keys
+1. `[A-Fa-f0-9]{80,}` → `[REDACTED-API-KEY]` — matches the 80-character hex format used by AbuseIPDB API keys. The whole hex run is replaced, so a key that directly follows or precedes other hex characters (a request ID, a digest) is never partially logged
 2. `(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*` → `bearer [REDACTED]` — matches Bearer tokens in any case
+3. `(?i)x-api-key:\s*[^\s"\\]+` → `X-Api-Key: [REDACTED]` — matches the CrowdSec LAPI bouncer key in dumped request headers
 
 The writer always returns `len(p)` (the original byte count) to satisfy zerolog's internal accounting even when the redacted output is shorter.
 

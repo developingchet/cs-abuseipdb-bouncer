@@ -291,6 +291,7 @@ These decisions are intentionally never reported:
 - **CAPI and lists origins** - Community blocklist IPs that are already globally known
 - **Private / reserved IP addresses** - RFC1918, loopback (127.0.0.0/8), link-local, CGNAT (100.64.0.0/10), benchmarking (198.18.0.0/15), multicast, 240.0.0.0/4, and IPv6 loopback/link-local/ULA/multicast — IPv4-mapped IPv6 (`::ffff:10.0.0.1`) is checked as IPv4
 - **Non-IP scopes** - Ranges, ASNs, country-level decisions (AbuseIPDB only accepts single IPs)
+- **Malformed IP values** - Anything other than a bare address or a `/32` / `/128` prefix, including wider networks and zoned IPv6 addresses (skip reason `invalid_ip`)
 - **IPs within the cooldown window** - Already reported within the past 15 minutes
 - **Decisions exceeding the daily quota** - Once the limit is reached, no further reports are sent that UTC day
 
@@ -395,7 +396,11 @@ go test -race ./... -count=1 -timeout=120s
 
 ## Upgrade notes
 
-**Metrics listener on loopback by default.** `METRICS_ADDR` now defaults to `127.0.0.1:9090` instead of `:9090`. The Docker image sets `METRICS_ADDR=:9090`, so container deployments are unaffected. A native install (systemd, Windows) that is scraped by Prometheus from another host stops answering that scraper after the upgrade, and no warning is logged because the new default is a loopback address. Set `METRICS_ADDR` explicitly, for example `0.0.0.0:9090` or the private interface address the scraper uses, and keep the port behind a firewall since the endpoints are unauthenticated.
+### Upgrading to v2.5.0
+
+**Metrics listener on loopback by default.** From v2.5.0, `METRICS_ADDR` defaults to `127.0.0.1:9090` instead of `:9090`. The Docker image sets `METRICS_ADDR=:9090`, so container deployments are unaffected. A native install (systemd, Windows) that is scraped by Prometheus from another host stops answering that scraper after upgrading to v2.5.0, and no warning is logged because the new default is a loopback address. Set `METRICS_ADDR` explicitly, for example `0.0.0.0:9090` or the private interface address the scraper uses, and keep the port behind a firewall since the endpoints are unauthenticated. The bouncer logs a warning at startup whenever `METRICS_ADDR` is not a loopback address.
+
+**New `invalid_ip` skip reason.** A decision whose value is not a single IP address (malformed text, a network wider than `/32` or `/128`, or a zoned IPv6 address) is now dropped before the cooldown and quota checks and counted under `filter="invalid_ip"` in `cs_abuseipdb_decisions_skipped_total`. Earlier versions spent a cooldown entry and a quota unit on such values before AbuseIPDB refused them. Dashboards and alerts that enumerate `filter` label values should include the new one.
 
 ## Migration from v1.x
 
