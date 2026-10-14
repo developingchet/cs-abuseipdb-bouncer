@@ -328,10 +328,10 @@ socketdev==3.6.0 \
     --hash=sha256:8453da37520db79735479e0892b74cef8ce5bcba52c99f15ffacc6a70f9ea355 \
     --hash=sha256:fe017aefa72638375bb0fb1697bf5704f64143a5fab634534dfc3e77c851b374
     # via socketsecurity
-socketsecurity==2.10.2 \
-    --hash=sha256:51b54281338896e2ce76b4e717ea2428b03bdb76c58de24c144abbae697ffad8 \
-    --hash=sha256:dfed97add46bc7a959f7b714842d93de94406155b75728cfd9dd27ae01f8a1fd
-    # via -r /tmp/r.in
+socketsecurity==2.10.10 \
+    --hash=sha256:6c8373c4bff27a15383857ef8104eada41ffd611fc29efc89a0b9fc94eb418fe \
+    --hash=sha256:e7919a9c316ac241d5e6eaae742c0cc55a2d6204f9566d95896b29bab4ab1de3
+    # via -r socket-cli.in
 soupsieve==2.10 \
     --hash=sha256:49e9380d7d2905463583bafe285e818c7366a9ed7b3aee221c1ac79c905d8bc0 \
     --hash=sha256:8596eb8967d744174820280fa62b4542a2e955bfaccca73ed8a13c6eb8e9b502
