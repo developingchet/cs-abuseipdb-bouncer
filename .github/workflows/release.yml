@@ -153,6 +153,7 @@ jobs:
             developingchet/cs-abuseipdb-bouncer
             ghcr.io/developingchet/cs-abuseipdb-bouncer
           tags: |
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
