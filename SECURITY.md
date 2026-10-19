@@ -100,7 +100,7 @@ The following are **in scope** for vulnerability reports:
 - The Go bouncer binary (`cmd/bouncer`, `internal/`)
 - The Dockerfile and runtime container configuration
 - The GitHub Actions CI/CD pipeline
-- The Docker image published to Docker Hub
+- The Docker image published to Docker Hub and GitHub Container Registry
 
 The following are **out of scope**:
 

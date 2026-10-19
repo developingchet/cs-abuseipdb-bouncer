@@ -14,8 +14,8 @@ A production-ready, security-hardened CrowdSec bouncer that reports malicious IP
 | **Honest Health Checks** | `/healthz` and `/readyz` reflect the last successful LAPI pull and AbuseIPDB call. The Docker `HEALTHCHECK` queries them over HTTP — it never touches `state.db` and never spends API quota. |
 | **Distroless Security** | The runtime image is `gcr.io/distroless/static-debian12:nonroot`. No shell, no package manager, no libc. Runs as UID 65532 with zero Linux capabilities and a read-only filesystem. Seccomp syscall allowlist applied by default in the provided `docker-compose.yml`. |
 | **Supply-Chain Provenance** | Every release is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC — no stored private key) and accompanied by a CycloneDX SBOM attached as a Cosign attestation and a GitHub Release asset. |
-| **Multi-Architecture** | Pre-built images for `linux/amd64` and `linux/arm64` on Docker Hub. Static Go binary — no libc, no CGO. |
-| **Zero-Touch Releases** | Every version tag triggers a GitHub Actions pipeline: tests (with `-race`) → Trivy CVE scan (blocks on HIGH/CRITICAL) → multi-arch Docker build → Cosign sign + SBOM → Docker Hub push → GitHub Release with binaries and SHA-256 checksums. |
+| **Multi-Architecture** | Pre-built images for `linux/amd64` and `linux/arm64` on Docker Hub and GitHub Container Registry (`ghcr.io/developingchet/cs-abuseipdb-bouncer`). Static Go binary — no libc, no CGO. |
+| **Zero-Touch Releases** | Every version tag triggers a GitHub Actions pipeline: tests (with `-race`) → Trivy CVE scan (blocks on HIGH/CRITICAL) → multi-arch Docker build → Docker Hub and GHCR push → Cosign sign + SBOM → GitHub Release with binaries and SHA-256 checksums. |
 
 ---
 
@@ -179,6 +179,8 @@ cosign verify developingchet/cs-abuseipdb-bouncer:latest \
 ```
 
 A CycloneDX SBOM is available as a GitHub Release asset and embedded as a Cosign attestation on the image.
+
+The same image, with the same tags and digest, is published as `ghcr.io/developingchet/cs-abuseipdb-bouncer`. It is signed and attested there too, so the command above also works with the `ghcr.io` name.
 
 ---
 

@@ -425,16 +425,16 @@ cosign verify developingchet/cs-abuseipdb-bouncer:<tag> \
 
 ### CycloneDX SBOM
 
-The `anchore/sbom-action` step generates a CycloneDX JSON SBOM from the published image after it is pushed to Docker Hub. The SBOM is:
+The `anchore/sbom-action` step generates a CycloneDX JSON SBOM from the published image after it is pushed. One build pushes the image to Docker Hub and to GitHub Container Registry, so both registries serve the same digest. The SBOM is:
 
 1. Attached to the GitHub Release as `cs-abuseipdb-bouncer.sbom.cyclonedx.json`
-2. Embedded as a Cosign attestation on the Docker image (`cosign attest --type cyclonedx`)
+2. Embedded as a Cosign attestation on the image in each registry (`cosign attest --type cyclonedx`), next to the image's Cosign signature
 
 The SBOM lists every package present in the image, enabling downstream consumers to check for known CVEs in the exact packages shipped.
 
 ### Trivy Scan
 
-Every release pipeline runs `aquasecurity/trivy-action` against the built image before pushing to Docker Hub. The step fails (and blocks publication) if any HIGH or CRITICAL CVEs are found in packages with available fixes.
+Every release pipeline runs `aquasecurity/trivy-action` against the built image before pushing it to either registry. The step fails (and blocks publication) if any HIGH or CRITICAL CVEs are found in packages with available fixes.
 
 ---
 
