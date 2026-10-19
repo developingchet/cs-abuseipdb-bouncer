@@ -380,6 +380,8 @@ cosign verify developingchet/cs-abuseipdb-bouncer:latest \
 
 A CycloneDX SBOM is attached to every GitHub Release and embedded as a Cosign attestation on the Docker image.
 
+The image is also published to GitHub Container Registry as `ghcr.io/developingchet/cs-abuseipdb-bouncer`, with the same tags and digest. It carries its own signature and SBOM attestation there, so the command above works with the `ghcr.io` name too.
+
 ## Building
 
 The binary compiles to approximately 8MB. Docker is required (Go does not need to be installed locally):
