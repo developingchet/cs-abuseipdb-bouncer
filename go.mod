@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/crowdsecurity/crowdsec v1.8.1
 	github.com/crowdsecurity/go-cs-bouncer v0.0.21
-	github.com/go-openapi/strfmt v0.27.2
+	github.com/go-openapi/strfmt v0.27.4
 	github.com/knadh/koanf/parsers/yaml v1.1.1
 	github.com/knadh/koanf/providers/confmap v1.0.1
 	github.com/knadh/koanf/providers/env v1.1.0
@@ -29,7 +29,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-openapi/analysis v0.26.0 // indirect
-	github.com/go-openapi/errors v0.22.8 // indirect
+	github.com/go-openapi/errors v0.22.9 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.0 // indirect
 	github.com/go-openapi/loads v0.25.0 // indirect
@@ -72,9 +72,9 @@ require (
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
