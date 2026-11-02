@@ -18,7 +18,21 @@ services:
       # AbuseIPDB v2 API key from: https://www.abuseipdb.com/account/api
       - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
 
+      # Read either key from a file instead (Docker / Kubernetes secrets).
+      # The path is inside the container; mount the file read-only.
+      - CROWDSEC_LAPI_KEY_FILE=${CROWDSEC_LAPI_KEY_FILE:-}
+      - ABUSEIPDB_API_KEY_FILE=${ABUSEIPDB_API_KEY_FILE:-}
+
+      # mTLS alternative to CROWDSEC_LAPI_KEY: set the certificate and key
+      # paths (inside the container) and leave CROWDSEC_LAPI_KEY empty.
+      - CROWDSEC_LAPI_TLS_CERT_PATH=${CROWDSEC_LAPI_TLS_CERT_PATH:-}
+      - CROWDSEC_LAPI_TLS_KEY_PATH=${CROWDSEC_LAPI_TLS_KEY_PATH:-}
+      - CROWDSEC_LAPI_TLS_CA_CERT_PATH=${CROWDSEC_LAPI_TLS_CA_CERT_PATH:-}
+
       # --- Optional ---
+      # Comma-separated IPs/CIDRs that are never reported.
+      - IP_WHITELIST=${IP_WHITELIST:-}
+
       # Daily report quota (free=1000, webmaster=3000, premium=50000).
       - ABUSEIPDB_DAILY_LIMIT=${ABUSEIPDB_DAILY_LIMIT:-1000}
 
@@ -36,6 +50,21 @@ services:
       # LAPI polling frequency. Lower values increase load on the LAPI.
       - POLL_INTERVAL=${POLL_INTERVAL:-30s}
 
+      # HTTP timeout for LAPI requests.
+      - LAPI_TIMEOUT=${LAPI_TIMEOUT:-10s}
+
+      # Worker pool size and queue length.
+      - WORKER_COUNT=${WORKER_COUNT:-4}
+      - WORKER_BUFFER=${WORKER_BUFFER:-256}
+
+      # How often expired cooldowns are pruned and the retry queue is checked.
+      - JANITOR_INTERVAL=${JANITOR_INTERVAL:-5m}
+      - RETRY_CHECK_INTERVAL=${RETRY_CHECK_INTERVAL:-30s}
+
+      # Usage-metrics telemetry pushed to the LAPI.
+      - USAGE_METRICS_ENABLED=${USAGE_METRICS_ENABLED:-true}
+      - USAGE_METRICS_INTERVAL=${USAGE_METRICS_INTERVAL:-30m}
+
       # Log level: trace, debug, info, warn, error
       - LOG_LEVEL=${LOG_LEVEL:-info}
 
@@ -47,6 +76,9 @@ services:
 
       # Persistent state directory (bbolt database).
       - DATA_DIR=/data
+
+      # Metrics / health probes server. The image's HEALTHCHECK needs it enabled.
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
 
       # Metrics / health probes address (set to empty string to disable).
       # Listens on all container interfaces so the published port below can
