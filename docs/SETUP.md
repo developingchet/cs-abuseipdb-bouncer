@@ -186,7 +186,7 @@ Verify the image:
 docker images | grep abuseipdb-bouncer
 ```
 
-The final image is approximately 8-12MB.
+The final image is approximately 26MB uncompressed.
 
 ### 6. Start the Bouncer
 
@@ -209,7 +209,7 @@ Expected output:
 docker ps | grep abuseipdb-bouncer
 ```
 
-Expected: container in "Up" state with `(healthy)` once the healthcheck passes (~15 seconds after startup). If LAPI is unreachable the bouncer keeps retrying and turns `(unhealthy)` after about two minutes.
+Expected: container in "Up" state with `(healthy)` once the first healthcheck passes (about 30 seconds after startup). If LAPI is unreachable the bouncer keeps retrying and turns `(unhealthy)` after about three and a half to four minutes: `/healthz` starts failing once the startup grace of `max(5 × POLL_INTERVAL, 2m)` has passed (2.5 minutes with the bundled compose file's `POLL_INTERVAL=30s`), and Docker then needs three failed checks 30 seconds apart.
 
 **Check startup logs:**
 
@@ -220,7 +220,7 @@ docker logs abuseipdb-bouncer
 Expected startup log:
 
 ```json
-{"time":1739836200,"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","workers":4,"msg":"bouncer started"}
+{"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","workers":4,"time":1739836200,"message":"bouncer started"}
 ```
 
 **Verify the bouncer is pulling from LAPI:**
@@ -244,7 +244,7 @@ docker logs -f abuseipdb-bouncer
 Expected log output:
 
 ```json
-{"time":1739836530,"level":"info","ip":"203.0.113.42","sink":"abuseipdb","daily":1,"limit":1000,"msg":"reported"}
+{"level":"info","ip":"203.0.113.42","sink":"abuseipdb","time":1739836530,"message":"reported"}
 ```
 
 Verify on AbuseIPDB:
@@ -296,7 +296,7 @@ Verify the state database exists:
 docker run --rm -v cs-abuseipdb-bouncer_bouncer-state:/state alpine ls -lh /state/state.db
 ```
 
-Expected: `state.db` is present after the first LAPI poll cycle (absent on a completely fresh install with zero decisions processed).
+Expected: `state.db` is present as soon as the bouncer has started; it is created at startup, before the first LAPI poll.
 
 ### Log Rotation
 

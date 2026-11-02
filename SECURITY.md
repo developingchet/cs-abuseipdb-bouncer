@@ -51,7 +51,7 @@ The Docker image runs with:
 
 ### Secret Handling
 
-- API keys are loaded exclusively from environment variables
+- API keys are loaded from environment variables, from files named by `CROWDSEC_LAPI_KEY_FILE` / `ABUSEIPDB_API_KEY_FILE` (Docker / Kubernetes secrets), or from the optional YAML file set by `CONFIG_FILE`
 - Keys are never written to disk or baked into the image
 - A `RedactWriter` wraps stderr and automatically replaces 80-character hex API keys (the whole surrounding hex run), `Bearer <token>` values and `X-Api-Key:` header values with `[REDACTED-API-KEY]` / `bearer [REDACTED]` / `X-Api-Key: [REDACTED]` before they can appear in log output
 
@@ -81,8 +81,8 @@ cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
 sha256sum --ignore-missing -c checksums.txt
 ```
 
-- Every pull request and push to `main`, plus a weekly scheduled run, verifies module checksums (`go mod verify`), runs **govulncheck**, builds the image and scans it with Trivy, and scans the Go modules and GitHub Actions with **[Socket](https://socket.dev)**. Pull requests that add a dependency violating the Socket policy are blocked.
-- A weekly workflow rescans the published `latest` image for each platform, so CVEs disclosed after a release show up in the Security tab.
+- Every pull request and push to `main` verifies module checksums (`go mod verify`), runs **govulncheck**, builds the image and scans it with Trivy, and scans the Go modules and GitHub Actions with **[Socket](https://socket.dev)**. Pull requests that add a dependency violating the Socket policy are blocked. The CI workflow, which runs every check here except the Socket scan, also runs weekly (Mondays 05:37 UTC).
+- A weekly workflow (Mondays 06:17 UTC) rescans the published `latest` image for each platform, so CVEs disclosed after a release show up in the Security tab.
 - [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/developingchet/cs-abuseipdb-bouncer) grades the repository's own practices (pinned actions, token permissions, branch protection, signed releases).
 
 ### Dependency Management

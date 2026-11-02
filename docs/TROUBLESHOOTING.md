@@ -22,7 +22,7 @@ Common issues and solutions for the CrowdSec AbuseIPDB Bouncer.
 **Symptom:** Container exits immediately with a configuration error.
 
 ```json
-{"level":"error","error":"3 configuration error(s):\n  - CROWDSEC_LAPI_KEY is required...","msg":"fatal"}
+{"level":"error","error":"configuration error: 1 configuration error(s):\n  - either CROWDSEC_LAPI_KEY (or CROWDSEC_LAPI_KEY_FILE) or mTLS cert/key paths must be configured","message":"fatal"}
 ```
 
 **Cause:** One or more required environment variables are missing or invalid.
@@ -37,11 +37,11 @@ docker compose config | grep -E "CROWDSEC|ABUSEIPDB"
 grep -E "^(CROWDSEC_LAPI_URL|CROWDSEC_LAPI_KEY|ABUSEIPDB_API_KEY)=" .env
 ```
 
-All three must be set and non-empty. `CROWDSEC_LAPI_URL` must include the scheme (`http://` or `https://`).
+All three must be set and non-empty, except that either API key can instead come from the file named by `CROWDSEC_LAPI_KEY_FILE` / `ABUSEIPDB_API_KEY_FILE`, and LAPI authentication can use mTLS (`CROWDSEC_LAPI_TLS_CERT_PATH` and `CROWDSEC_LAPI_TLS_KEY_PATH`, both set) in place of `CROWDSEC_LAPI_KEY`, never combined with it. `CROWDSEC_LAPI_URL` must include the scheme (`http://` or `https://`).
 
 ### LAPI connection refused at startup
 
-**Symptom:** The container stays up but logs LAPI connection errors every 10 seconds, and turns `unhealthy` about two minutes after start.
+**Symptom:** The container stays up but logs LAPI connection errors every 10 seconds, and turns `unhealthy` about three and a half to four minutes after start (the `max(5 × POLL_INTERVAL, 2m)` startup grace, then three failed Docker health checks 30 seconds apart).
 
 ```json
 {"level":"error","component":"lapi-client","message":"failed to connect to LAPI, retrying in 10s: Get \"http://crowdsec:8080/v1/decisions/stream?...\": dial tcp 172.18.0.2:8080: connect: connection refused"}
@@ -64,7 +64,7 @@ docker exec abuseipdb-bouncer /usr/local/bin/bouncer healthcheck
 **Symptom:** Container exits immediately on first run.
 
 ```json
-{"level":"error","error":"open /data/state.db: permission denied","msg":"fatal"}
+{"level":"error","error":"bouncer init: storage: open /data/state.db: open /data/state.db: permission denied","message":"fatal"}
 ```
 
 **Cause:** The named volume was created before the image embedded `/data` with the correct ownership. Docker provisioned the volume owned `root:root`; the process (UID 65532) cannot write to it.
@@ -101,7 +101,7 @@ OCI runtime start failed [...] reopen exec fifo [...] operation not permitted
 bash scripts/validate-seccomp.sh ./security/seccomp-bouncer.json
 ```
 
-A `PASS` result means the profile file on disk is correct. If you see `MISS` lines, the host's copy of the profile is outdated.
+A `PASS` result means the profile file on disk is correct. If you see `FAIL  missing N required syscall(s):` followed by `- <syscall>` lines, the host's copy of the profile is outdated.
 
 **Fix:** Download the current profile from GitHub and recreate the container:
 
@@ -110,8 +110,8 @@ curl -fsSL \
   https://raw.githubusercontent.com/developingchet/cs-abuseipdb-bouncer/main/security/seccomp-bouncer.json \
   -o ./security/seccomp-bouncer.json
 
-docker compose up -d --force-recreate cs-abuseipdb-bouncer
-docker logs cs-abuseipdb-bouncer
+docker compose up -d --force-recreate abuseipdb-bouncer
+docker logs abuseipdb-bouncer
 ```
 
 **Note on `close_range`:** This syscall requires Linux 5.9+. On older kernels runc falls back to closing FDs one at a time (`ENOSYS` is handled gracefully), so allowing `close_range` in the profile is safe across all kernel versions — it simply never gets called on kernels that don't support it.
@@ -168,6 +168,8 @@ Look for `"message":"decision filtered (pre-queue)"` and `"decision filtered (co
 | `rejected` | AbuseIPDB returned 422 (invalid parameters) | Check the `detail` in the error log line |
 | `retry_exhausted` | Report failed 6 times in a row | Check AbuseIPDB reachability / API key |
 | `buffer_full` | Worker queue full during a burst | Increase `WORKER_BUFFER` or `WORKER_COUNT` |
+| `retry_buffer_full` | Worker queue full when the retry worker resubmitted a due decision; the decision is lost | Increase `WORKER_BUFFER` or `WORKER_COUNT` |
+| `retry_enqueue_failed` | A failed or rate-limited report could not be written to the retry queue in `state.db`; the decision is lost | Check the error log line (`failed to enqueue retry -- decision lost`) and the `/data` volume |
 
 ### Decisions are within the cooldown window
 
@@ -326,7 +328,7 @@ docker inspect --format '{{json .State.Health}}' abuseipdb-bouncer | jq '.Log[-1
 | `last 5 AbuseIPDB calls failed` | Network/TLS problem reaching api.abuseipdb.com, AbuseIPDB 5xx, or invalid API key (401) |
 | `healthcheck needs the metrics/health server` | `METRICS_ENABLED=false` or `METRICS_ADDR` empty — re-enable it or disable the container healthcheck |
 | `connection refused` | The HTTP server could not bind `METRICS_ADDR` (check logs for `metrics server error`) |
-| `storage: open /data/state.db: timeout` | You are running an image older than this fix; the old healthcheck opened the locked database. Upgrade. |
+| `storage: open /data/state.db: timeout` | You are running an image older than v2.4.0, whose healthcheck opened the locked database. Upgrade. |
 
 ---
 

@@ -40,7 +40,7 @@ When submitting a bug report, include:
 - Steps to reproduce the issue
 - Expected vs. actual behavior
 
-Security vulnerabilities should be reported privately via email, not as public issues.
+Security vulnerabilities should be reported privately through a GitHub Security Advisory, as described in [SECURITY.md](SECURITY.md), not as public issues.
 
 ### Suggesting Enhancements
 
@@ -129,13 +129,13 @@ Go is required for local development and running tests. Docker is used for build
 
 ### Go Guidelines
 
-The project follows standard Go conventions enforced by `gofmt` and `go vet`.
+The project follows standard Go conventions enforced by `gofmt`, `go vet` and `golangci-lint` (configured in `.golangci.yml`; CI runs it on every pull request).
 
 **Formatting**
 
 All code must be formatted with `gofmt`:
 ```bash
-gofmt -w ./...
+gofmt -w .
 ```
 
 **Error handling**
@@ -286,6 +286,8 @@ Before submitting, verify:
 - [ ] `go test ./...` passes
 - [ ] `go test -race ./...` passes (no data races)
 - [ ] `go vet ./...` reports no issues
+- [ ] `golangci-lint run ./...` reports no issues (CI blocks on lint failures)
+- [ ] `go test -cover ./cmd/... ./internal/...` shows 100% statement coverage for every package (CI fails any package below 100%)
 - [ ] Documentation updated if applicable
 - [ ] No sensitive data (API keys, real IP addresses) in commits
 - [ ] Commit messages are clear and descriptive
@@ -313,14 +315,8 @@ Add mappings for:
 - Integration guides (Kubernetes, Proxmox, Synology NAS)
 - Blog posts or articles about the project
 
-### Testing Infrastructure
-
-- CI/CD pipeline (GitHub Actions)
-- Multi-architecture Docker builds (ARM, ARM64)
-
 ### Features
 
-- Prometheus metrics endpoint
 - Custom category mapping via configuration file
 - Webhook notifications for quota warnings
 

@@ -58,7 +58,8 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │       CrowdSec LAPI          │
 │       (port 8080 / 8443)     │
 └──────────────┬───────────────┘
-               │ polls every 2s
+               │ polls every POLL_INTERVAL (default 2s;
+               │ the bundled docker-compose.yml sets 30s)
                │ GET /v1/decisions/stream
                │
                v
@@ -70,9 +71,11 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │    2. exclude impossible-travel scenarios           │
 │    3. origin = crowdsec / cscli                     │
 │    4. scope = ip                                    │
-│    5. value is a single valid IP address            │
-│    6. reject private IPs                            │
-│    7. min duration check                            │
+│    5. value is present                              │
+│    6. value is a single valid IP address            │
+│    7. reject private IPs                            │
+│    8. reject IP_WHITELIST matches (only when set)   │
+│    9. min duration check                            │
 │                                                     │
 │              │  (non-blocking enqueue; drop →       │
 │              │   buffer_full metric on overflow)    │
@@ -83,8 +86,8 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │           │        │  (N workers, default 4)        │
 │           v        v                                │
 │    ┌──────────┐  ┌──────────┐                       │
-│    │ Worker 1 │  │ Worker N │  8. cooldown check    │
-│    │  atomic  │  │  atomic  │  9. quota check       │
+│    │ Worker 1 │  │ Worker N │  10. cooldown check   │
+│    │  atomic  │  │  atomic  │  11. quota check      │
 │    │ bbolt tx │  │ bbolt tx │  (single transaction) │
 │    └──────────┘  └──────────┘                       │
 │                                                     │
@@ -105,7 +108,7 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 └──────────────────────────────┘
 ```
 
-New decisions stream continuously from the LAPI. Each decision passes through seven stateless pre-queue filters, then is handed off to a concurrent worker pool. Workers perform the quota and cooldown checks atomically (single bbolt transaction each) before dispatching to the AbuseIPDB sink. State is persisted to a named Docker volume so daily counts and per-IP cooldowns survive container restarts.
+New decisions stream continuously from the LAPI. Each decision passes through eight stateless pre-queue filters (nine when `IP_WHITELIST` is set), then is handed off to a concurrent worker pool. Workers perform the quota and cooldown checks atomically (single bbolt transaction each) before dispatching to the AbuseIPDB sink. State is persisted to a named Docker volume so daily counts and per-IP cooldowns survive container restarts.
 
 In parallel, a background usage-metrics worker aggregates successful AbuseIPDB submissions and pushes telemetry to `POST /v1/usage-metrics` every `30m` by default (`USAGE_METRICS_INTERVAL`, minimum `10m`).
 
@@ -145,7 +148,7 @@ docker exec crowdsec cscli bouncers list
 Expected startup log (JSON format):
 
 ```json
-{"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","workers":4,"msg":"bouncer started"}
+{"level":"info","limit":1000,"used_today":0,"cooldown":"15m0s","precheck":false,"min_duration":"0s","log_level":"info","workers":4,"message":"bouncer started"}
 ```
 
 ## Documentation
@@ -161,48 +164,80 @@ Expected startup log (JSON format):
 
 ```
 .
+├── .github/
+│   ├── workflows/                       # CI, release, image scan, Scorecard, Socket, Docker Hub description
+│   ├── tools/                           # Pinned CI tool versions (govulncheck)
+│   ├── requirements/                    # Pinned Socket CLI requirements
+│   ├── CODEOWNERS
+│   └── dependabot.yml
 ├── cmd/
 │   └── bouncer/
-│       └── main.go                      # CLI entry point (Cobra)
+│       ├── main.go                      # CLI entry point (Cobra)
+│       ├── main_test.go
+│       └── healthcheck.go               # `bouncer healthcheck` subcommand (Docker HEALTHCHECK)
 ├── internal/
 │   ├── bouncer/
 │   │   ├── bouncer.go                   # Main run loop + pre-queue filter pipeline
 │   │   ├── bouncer_test.go
+│   │   ├── health.go                    # /healthz and /readyz state and handlers
+│   │   ├── health_test.go
 │   │   ├── janitor.go                   # Background cooldown pruner + DB size metric
 │   │   ├── janitor_test.go
 │   │   ├── pool.go                      # Concurrent worker pool
-│   │   └── pool_test.go
+│   │   ├── pool_test.go
+│   │   ├── pool_outcome_test.go
+│   │   ├── retry_test.go
+│   │   ├── runtime_test.go
+│   │   └── testmain_test.go
 │   ├── config/
 │   │   ├── config.go                    # Env-based configuration
 │   │   └── config_test.go
 │   ├── decision/
 │   │   ├── filter.go                    # Filter pipeline
 │   │   ├── filter_test.go
+│   │   ├── filter_error_test.go
+│   │   ├── fuzz_test.go
 │   │   ├── ip.go                        # Private IP detection
 │   │   └── ip_test.go
 │   ├── logger/
-│   │   └── redact.go                    # RedactWriter: masks API keys and Bearer tokens in logs
+│   │   ├── logrus.go                    # Forwards go-cs-bouncer's logrus output into zerolog
+│   │   ├── logrus_test.go
+│   │   ├── redact.go                    # RedactWriter: masks API keys and Bearer tokens in logs
+│   │   ├── redact_test.go
+│   │   ├── fuzz_test.go
+│   │   └── testdata/                    # Fuzz corpus
 │   ├── sink/
 │   │   ├── sink.go                      # Sink interface
+│   │   ├── sink_test.go
+│   │   ├── errors.go                    # Typed sink errors (duplicate, rate limit, permanent, unauthorized)
 │   │   └── abuseipdb/
 │   │       ├── categories.go            # Category ID constants
 │   │       ├── categories_test.go
 │   │       ├── client.go                # HTTP client (sync.Pool for response buffers)
 │   │       ├── client_test.go
+│   │       ├── client_metrics_test.go
 │   │       ├── mapper.go                # Scenario-to-category mapping
 │   │       └── mapper_test.go
 │   ├── metrics/
-│   │   └── metrics.go                   # Prometheus metric definitions
+│   │   ├── metrics.go                   # Prometheus metric definitions
+│   │   ├── metrics_test.go
+│   │   └── register_test.go
 │   ├── telemetry/
 │   │   ├── payload.go                   # LAPI /usage-metrics payload builder
+│   │   ├── payload_test.go
 │   │   ├── counter.go                   # In-memory processed counter for telemetry windows
-│   │   └── sender.go                    # Background telemetry push worker
+│   │   ├── counter_test.go
+│   │   ├── sender.go                    # Background telemetry push worker
+│   │   └── sender_test.go
 │   └── storage/
 │       ├── store.go                     # Storage interface
-│       ├── bbolt.go                     # ACID bbolt persistence (quota + cooldown, atomic ops)
+│       ├── bbolt.go                     # ACID bbolt persistence (quota, cooldown and retry queue, atomic ops)
 │       ├── bbolt_test.go
 │       ├── bbolt_concurrent_test.go     # Concurrent correctness tests (-race)
-│       └── mock.go                      # In-memory store for testing
+│       ├── mock.go                      # In-memory store for testing
+│       └── mock_test.go
+├── scripts/
+│   └── validate-seccomp.sh              # Static check of the seccomp profile's required syscalls
 ├── security/
 │   └── seccomp-bouncer.json             # OCI seccomp profile (minimal syscall allowlist)
 ├── docs/
@@ -213,13 +248,18 @@ Expected startup log (JSON format):
 │   └── TROUBLESHOOTING.md
 ├── .env.example                         # Environment variable template
 ├── .gitignore
+├── .golangci.yml                        # golangci-lint configuration
+├── COMPLIANCE.md                        # CrowdSec remediation-component compliance checklist
 ├── CONTRIBUTING.md
+├── DOCKERHUB.md                         # Docker Hub repository description
 ├── Dockerfile                           # Multi-stage: golang -> distroless
 ├── docker-compose.yml
 ├── go.mod
 ├── go.sum
 ├── LICENSE
+├── Makefile                             # Test, coverage, lint and build targets
 ├── SECURITY.md                          # Vulnerability disclosure policy
+├── socket.yml                           # Socket.dev supply-chain scan configuration
 └── README.md
 ```
 
@@ -247,7 +287,7 @@ ABUSEIPDB_DAILY_LIMIT=1000    # Free=1000, Webmaster=3000, Premium=50000
 ABUSEIPDB_PRECHECK=false      # Pre-check /check endpoint before reporting
 ABUSEIPDB_MIN_DURATION=0      # Skip decisions shorter than N seconds
 COOLDOWN_DURATION=15m         # Per-IP cooldown window
-POLL_INTERVAL=2s              # LAPI polling frequency (min 2s)
+POLL_INTERVAL=2s              # LAPI polling frequency (min 2s; the bundled docker-compose.yml sets 30s)
 LOG_LEVEL=info                # trace, debug, info, warn, error
 LOG_FORMAT=json               # json or text
 TLS_SKIP_VERIFY=false         # Skip TLS verification (self-signed certs)
@@ -292,6 +332,8 @@ These decisions are intentionally never reported:
 - **Private / reserved IP addresses** - RFC1918, loopback (127.0.0.0/8), link-local, CGNAT (100.64.0.0/10), benchmarking (198.18.0.0/15), multicast, 240.0.0.0/4, and IPv6 loopback/link-local/ULA/multicast — IPv4-mapped IPv6 (`::ffff:10.0.0.1`) is checked as IPv4
 - **Non-IP scopes** - Ranges, ASNs, country-level decisions (AbuseIPDB only accepts single IPs)
 - **Malformed IP values** - Anything other than a bare address or a `/32` / `/128` prefix, including wider networks and zoned IPv6 addresses (skip reason `invalid_ip`)
+- **Whitelisted IPs** - Addresses matching `IP_WHITELIST`, when it is set (skip reason `whitelist`)
+- **Short decisions** - Bans shorter than `ABUSEIPDB_MIN_DURATION`, when it is set (skip reason `min_duration`)
 - **IPs within the cooldown window** - Already reported within the past 15 minutes
 - **Decisions exceeding the daily quota** - Once the limit is reached, no further reports are sent that UTC day
 
@@ -301,16 +343,19 @@ State is stored in a single `state.db` file (bbolt embedded database) inside `DA
 
 ```
 /data/
-└── state.db                  # bbolt database with two buckets:
+└── state.db                  # bbolt database with three buckets:
     ├── quota                 # JSON record: {"count":42,"date":"2026-02-17"}
-    └── cooldown              # Per-IP binary Unix timestamps (big-endian int64)
-                              #   key: 203_0_113_42  (IPv4)
-                              #   key: 2001_db8__1   (IPv6, colons → underscores)
+    ├── cooldown              # Per-IP binary Unix timestamps (big-endian int64)
+    │                         #   key: 203.0.113.42  (IPv4, unchanged)
+    │                         #   key: 2001_db8__1   (IPv6, colons → underscores)
+    └── retry                 # Per-IP JSON record, same keys as cooldown:
+                              #   {"ip":"203.0.113.42","scenario":"crowdsecurity/ssh-bf",
+                              #    "retry_after":1739837130,"attempts":1}
 ```
 
 Volume mount: `bouncer-state:/data`
 
-The daily quota record resets automatically at UTC midnight. Cooldown entries are pruned by the background janitor (every 5 minutes by default, configurable via `JANITOR_INTERVAL`). Both survive container restarts via the named Docker volume.
+The daily quota record resets automatically at UTC midnight. Cooldown entries are pruned by the background janitor (every 5 minutes by default, configurable via `JANITOR_INTERVAL`). The retry bucket holds decisions waiting for another delivery attempt. All three survive container restarts via the named Docker volume.
 
 ## Observability
 
@@ -319,7 +364,7 @@ The HTTP server (enabled by default at `127.0.0.1:9090`; the Docker image listen
 | Endpoint | Description |
 |----------|-------------|
 | `GET /metrics` | Prometheus metrics in text exposition format |
-| `GET /healthz` | Liveness — HTTP 200 while the LAPI has been polled successfully within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls have failed; 503 otherwise. A 2-minute startup grace applies. |
+| `GET /healthz` | Liveness — HTTP 200 while the LAPI has been polled successfully within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls have failed; 503 otherwise. The same `max(5 × POLL_INTERVAL, 2m)` applies as a startup grace before the first pull. |
 | `GET /readyz` | Readiness — as `/healthz`, and additionally 503 until the first successful LAPI pull |
 
 Both health endpoints return a JSON body (`status`, `reason`, `last_lapi_pull`, `last_abuseipdb_ok`, `last_abuseipdb_failure`, `consecutive_abuseipdb_failures`) and are served from memory: they never open `state.db` and never call AbuseIPDB. The Docker `HEALTHCHECK` runs `bouncer healthcheck`, which GETs `/healthz` on `METRICS_ADDR` — so it requires `METRICS_ENABLED=true`.
@@ -349,15 +394,15 @@ curl http://localhost:9090/metrics | grep cs_abuseipdb
 JSON format (default):
 
 ```json
-{"time":1739836530,"level":"info","ip":"203.0.113.42","sink":"abuseipdb","daily":15,"limit":1000,"msg":"reported"}
-{"time":1739836530,"level":"debug","ip":"192.168.1.1","filter":"private_ip","detail":"ip=192.168.1.1 is private/reserved","msg":"decision filtered (pre-queue)"}
+{"level":"info","ip":"203.0.113.42","sink":"abuseipdb","time":1739836530,"message":"reported"}
+{"level":"debug","ip":"192.168.1.1","filter":"private_ip","detail":"ip=192.168.1.1 is private/reserved","time":1739836531,"message":"decision filtered (pre-queue)"}
 ```
 
 Human-readable format (`LOG_FORMAT=text`):
 
 ```
-12:15:30 INF reported ip=203.0.113.42 sink=abuseipdb daily=15 limit=1000
-12:15:31 DBG decision filtered (pre-queue) ip=192.168.1.1 filter=private_ip
+12:15PM INF reported ip=203.0.113.42 sink=abuseipdb
+12:15PM DBG decision filtered (pre-queue) detail="ip=192.168.1.1 is private/reserved" filter=private_ip ip=192.168.1.1
 ```
 
 Enable debug logging:
@@ -384,7 +429,7 @@ The image is also published to GitHub Container Registry as `ghcr.io/developingc
 
 ## Building
 
-The binary compiles to approximately 8MB. Docker is required (Go does not need to be installed locally):
+The binary compiles to approximately 13MB. Docker is required (Go does not need to be installed locally):
 
 ```bash
 docker compose build

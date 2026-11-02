@@ -64,8 +64,8 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | Variable | Description |
 |----------|-------------|
 | `CROWDSEC_LAPI_URL` | URL of the CrowdSec Local API (e.g. `http://crowdsec:8080`) |
-| `CROWDSEC_LAPI_KEY` | Bouncer API key from `cscli bouncers add` |
-| `ABUSEIPDB_API_KEY` | AbuseIPDB v2 API key from abuseipdb.com/account/api |
+| `CROWDSEC_LAPI_KEY` | Bouncer API key from `cscli bouncers add`. Alternatives: `CROWDSEC_LAPI_KEY_FILE` (path to a file holding the key), or mTLS with `CROWDSEC_LAPI_TLS_CERT_PATH` + `CROWDSEC_LAPI_TLS_KEY_PATH` (optional `CROWDSEC_LAPI_TLS_CA_CERT_PATH`) instead of a key — use one auth mode, not both. |
+| `ABUSEIPDB_API_KEY` | AbuseIPDB v2 API key from abuseipdb.com/account/api. Alternative: `ABUSEIPDB_API_KEY_FILE` (path to a file holding the key). |
 
 ### Optional
 
