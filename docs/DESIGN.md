@@ -29,7 +29,7 @@ Architecture decisions and design philosophy for the CrowdSec AbuseIPDB Bouncer.
 
 **Native LAPI integration.** CrowdSec maintains an official Go bouncer library (`go-cs-bouncer`) that handles authentication, long-polling, decision streaming, and reconnection. Using it eliminates the indirection of the previous architecture (custom-bouncer binary → stdin pipe → shell script → curl).
 
-**Binary size.** The compiled binary is approximately 8MB. With the distroless base, the total image is 10-15MB -- comparable to the previous Alpine-based image but with a dramatically smaller attack surface.
+**Binary size.** The compiled binary is approximately 13MB. With the distroless base, the total image is about 26MB uncompressed -- comparable to the previous Alpine-based image but with a dramatically smaller attack surface.
 
 ---
 
@@ -95,7 +95,7 @@ The container runs as UID 65532 (the distroless nonroot user). It writes only to
 
 ### Seccomp Profile
 
-`security/seccomp-bouncer.json` is a minimal OCI seccomp profile with `defaultAction: SCMP_ACT_ERRNO`. It permits only the syscalls the bouncer actually uses, grouped by function:
+`security/seccomp-bouncer.json` is a minimal OCI seccomp profile with `defaultAction: SCMP_ACT_ERRNO`. It permits only the syscalls the bouncer and the container runtime actually use. The list below is a selection, grouped by function; the profile file is the complete list:
 
 - **File I/O:** `read`, `write`, `open`, `openat`, `close`, `stat`, `fstat`, `lstat`, `fstatfs`, `lseek`, `fsync`, `fdatasync`, `ftruncate`, `rename`, `unlink`, `mkdir`, `access`, `faccessat`, `newfstatat`, `getcwd`, `openat2`
 - **Memory:** `mmap`, `mprotect`, `munmap`, `mremap`, `madvise`, `brk`
@@ -107,7 +107,7 @@ The container runs as UID 65532 (the distroless nonroot user). It writes only to
 
 ### Secret Handling
 
-API keys are loaded exclusively from environment variables. They are never written to disk and are not baked into the image. A `RedactWriter` (`internal/logger/redact.go`) wraps stderr and applies three regular expressions before any log line reaches the output:
+API keys are loaded from environment variables, from files named by `CROWDSEC_LAPI_KEY_FILE` / `ABUSEIPDB_API_KEY_FILE` (Docker / Kubernetes secrets), or from the optional `CONFIG_FILE`. The bouncer never writes them to disk, and they are not baked into the image. A `RedactWriter` (`internal/logger/redact.go`) wraps stderr and applies three regular expressions before any log line reaches the output:
 
 1. `[A-Fa-f0-9]{80,}` → `[REDACTED-API-KEY]` — matches the 80-character hex format used by AbuseIPDB API keys. The whole hex run is replaced, so a key that directly follows or precedes other hex characters (a request ID, a digest) is never partially logged
 2. `(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*` → `bearer [REDACTED]` — matches Bearer tokens in any case
@@ -137,7 +137,7 @@ Decisions pass through two ordered pipelines:
 
 ### Pre-Queue Pipeline (main event loop — stateless, no I/O)
 
-Eight filters run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
+Eight filters (nine when `IP_WHITELIST` is set) run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
 
 ```
 Decision from LAPI
@@ -159,15 +159,21 @@ Decision from LAPI
        |
        v
 5. ValueRequired()              -- reject empty value field
-   IPValue()                    -- reject anything but one IP address;
+       |
+       v
+6. IPValue()                    -- reject anything but one IP address;
                                    canonicalise the value (unmap
                                    ::ffff:a.b.c.d, drop /32 and /128)
        |
        v
-6. PrivateIPReject()            -- reject RFC1918, loopback, CGNAT, etc.
+7. PrivateIPReject()            -- reject RFC1918, loopback, CGNAT, etc.
        |
        v
-7. MinDurationFilter(cfg)       -- reject short bans (optional)
+8. WhitelistFilter(cfg)         -- reject IP_WHITELIST matches
+                                   (added only when IP_WHITELIST is set)
+       |
+       v
+9. MinDurationFilter(cfg)       -- reject short bans (optional)
        |
        v
    [enqueue to worker pool — non-blocking, drops on overflow]
@@ -181,10 +187,10 @@ Each worker dequeues a job and runs one atomic store operation, `Admit(ip)`, bef
 Worker receives job
        |
        v
-8. cooldown check               -- read expiry for ip
+10. cooldown check              -- read expiry for ip
        |  active → skip (nothing written, no quota consumed)
        v
-9. quota check                  -- read today's count
+11. quota check                 -- read today's count
        |  exhausted → skip (nothing written)
        v
    set cooldown expiry, increment count, commit
@@ -246,10 +252,12 @@ IPv4-mapped IPv6 addresses (`::ffff:10.0.0.1`) are unmapped before the check. Th
 
 ```go
 type workerPool struct {
-    jobCh chan workerJob   // bounded channel (WORKER_BUFFER capacity)
-    wg    sync.WaitGroup  // tracks live workers
-    store storage.Store
-    sinks []sink.Sink
+    jobCh   chan workerJob     // bounded channel (WORKER_BUFFER capacity)
+    wg      sync.WaitGroup     // tracks live workers
+    store   storage.Store
+    sinks   []sink.Sink
+    counter *telemetry.Counter // usage-metrics counter (nil when USAGE_METRICS_ENABLED=false)
+    health  *healthState       // liveness signals for /healthz and /readyz
 }
 ```
 
@@ -312,7 +320,7 @@ Sinks own their own category mapping. The `Report` struct carries only `IP`, `De
 
 ## State Management
 
-State is stored in a single `state.db` file using [bbolt](https://github.com/etcd-io/bbolt), an embedded ACID key-value store. The database contains two buckets.
+State is stored in a single `state.db` file using [bbolt](https://github.com/etcd-io/bbolt), an embedded ACID key-value store. The database contains three buckets.
 
 ### Daily Quota Counter (`quota` bucket)
 
@@ -327,7 +335,7 @@ The date is checked inside every `Admit` transaction. If the stored date differs
 
 ### Per-IP Cooldown (`cooldown` bucket)
 
-**Key:** sanitised IP string (e.g. `203_0_113_42` for IPv4, `2001_db8__1` for IPv6 — colons and dots replaced with underscores)
+**Key:** sanitised IP string (e.g. `203.0.113.42` for IPv4, `2001_db8__1` for IPv6 — any CIDR suffix stripped and colons replaced with underscores; dots are kept)
 **Value:** big-endian int64 Unix timestamp of expiry (8 bytes)
 
 `Admit(ip)` runs in a single `bolt.Update`:
@@ -337,6 +345,17 @@ The date is checked inside every `Admit` transaction. If the stored date differs
 4. Otherwise, increment the quota count, write the new expiry (`now + cooldownDuration`) and return `AdmitGranted`
 
 This atomic check-and-set eliminates the TOCTOU race present in the earlier separate `CooldownAllow()` + `CooldownRecord()` design, where two concurrent workers could both observe "no cooldown" and both proceed to report the same IP.
+
+### Retry Queue (`retry` bucket)
+
+**Key:** sanitised IP string, as in the `cooldown` bucket
+**Value:** JSON-encoded struct
+
+```json
+{"ip": "203.0.113.42", "scenario": "crowdsecurity/ssh-bf", "retry_after": 1739837130, "attempts": 1}
+```
+
+`ip` keeps the original value for the AbuseIPDB call, `retry_after` is the Unix time the entry becomes due, and `attempts` counts the delivery attempts already made. Enqueuing an IP that is already queued replaces its entry. The retry worker dequeues due entries every `RETRY_CHECK_INTERVAL` (and once at startup) and resubmits them to the worker pool.
 
 ### Cooldown Pruning (Janitor)
 
@@ -443,7 +462,7 @@ Every release pipeline runs `aquasecurity/trivy-action` against the built image 
 All packages have `_test.go` files with table-driven tests. External dependencies are mocked:
 
 - **AbuseIPDB API:** `httptest.NewServer` in `client_test.go` -- no real API calls in tests
-- **CrowdSec LAPI:** The `StreamBouncer` is not used in unit tests. `bouncer_test.go` calls `processDecision` directly with typed arguments
+- **CrowdSec LAPI:** `bouncer_test.go` calls `processDecision` directly with typed arguments. `runtime_test.go` builds a real `StreamBouncer` and runs `Run` against an `httptest.NewServer` fake LAPI
 - **Filesystem:** `t.TempDir()` provides isolated, automatically-cleaned directories for bbolt tests
 
 ### Concurrency Tests

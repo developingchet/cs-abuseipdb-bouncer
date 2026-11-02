@@ -106,7 +106,7 @@ Once the limit is reached, all subsequent decisions are dropped with a `quota` s
 
 **Type:** Boolean
 **Default:** `false`
-**Options:** `true`, `false`, `1`, `0`, `yes`, `no`
+**Options:** `true`/`false`, `1`/`0`, `t`/`f` (also `TRUE`/`True`, `FALSE`/`False`, `T`, `F`); `yes`/`no` are rejected
 
 When `true`, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped.
 
@@ -121,6 +121,8 @@ Recommended for tiers where check quota comfortably exceeds your report volume.
 
 **Type:** Duration string (`"5m"`, `"1h"`) or plain integer (seconds, e.g. `300`)
 **Default:** `0` (disabled)
+
+Plain integer seconds are accepted only in the environment variable. In a `CONFIG_FILE`, set `abuseipdb_min_duration` as a duration string (`5m`); a bare number there is read as nanoseconds.
 
 Skip decisions shorter than this duration. The decision's `duration` field is parsed and compared before enqueueing.
 
@@ -186,7 +188,7 @@ The bouncer also accepts the legacy `STATE_DIR` environment variable if `DATA_DI
 
 **Type:** Boolean
 **Default:** `true`
-**Options:** `true`, `false`, `1`, `0`, `yes`, `no`
+**Options:** `true`/`false`, `1`/`0`, `t`/`f` (also `TRUE`/`True`, `FALSE`/`False`, `T`, `F`); `yes`/`no` are rejected
 
 Set to `false` to disable the built-in HTTP server entirely. No port is opened and the
 `/metrics`, `/healthz`, and `/readyz` endpoints are unavailable. This takes precedence
@@ -208,7 +210,7 @@ The binary listens on loopback only unless told otherwise. The Docker image sets
 | Endpoint | Description |
 |----------|-------------|
 | `GET /metrics` | Prometheus metrics in text exposition format |
-| `GET /healthz` | Liveness — 200 while the last successful LAPI pull is within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls have failed (network errors, 5xx, 401); 503 otherwise. A 2-minute startup grace applies before the first pull. |
+| `GET /healthz` | Liveness — 200 while the last successful LAPI pull is within `max(5 × POLL_INTERVAL, 2m)` and fewer than 5 consecutive AbuseIPDB calls have failed (network errors, 5xx, 401); 503 otherwise. The same `max(5 × POLL_INTERVAL, 2m)` applies as a startup grace before the first pull. |
 | `GET /readyz` | Readiness — as `/healthz`, and 503 until the first successful LAPI pull |
 
 Both health endpoints answer from in-process state with a JSON body, for example:
@@ -276,7 +278,7 @@ Expired entries are pruned from `state.db` by the background janitor (see `JANIT
 **Default:** `2s`
 **Minimum:** `2s`
 
-How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 2 s are rejected at startup.
+How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 2 s are rejected at startup. The bundled `docker-compose.yml` sets `30s`.
 
 #### LOG_LEVEL
 
@@ -304,12 +306,12 @@ Output format for log messages.
 
 `json` produces structured key-value output compatible with Loki, Splunk, Elasticsearch, and similar tools:
 ```json
-{"time":1739836530,"level":"info","ip":"203.0.113.42","sink":"abuseipdb","daily":15,"limit":1000,"msg":"reported"}
+{"level":"info","ip":"203.0.113.42","sink":"abuseipdb","time":1739836530,"message":"reported"}
 ```
 
 `text` produces human-readable output suitable for direct inspection:
 ```
-12:15:30 INF reported ip=203.0.113.42 sink=abuseipdb daily=15 limit=1000
+12:15PM INF reported ip=203.0.113.42 sink=abuseipdb
 ```
 
 In both formats, AbuseIPDB API keys, Bearer tokens and `X-Api-Key` header values are automatically redacted from all log lines by the built-in `RedactWriter`.
@@ -347,7 +349,7 @@ These settings control the worker pool introduced in v2.0. All have sensible def
 **Default:** `4`
 **Range:** 1–64
 
-Number of goroutines that concurrently send reports to AbuseIPDB. Each worker handles one HTTP round-trip (up to ~15 s with retries) independently, so multiple ban decisions are dispatched in parallel rather than sequentially.
+Number of goroutines that concurrently send reports to AbuseIPDB. Each worker handles one report independently (up to about 60 s: three 15 s attempts with 5 s and 10 s backoffs between them, plus up to 10 s for the `/check` call when `ABUSEIPDB_PRECHECK` is enabled), so multiple ban decisions are dispatched in parallel rather than sequentially.
 
 Increasing this value helps during high-frequency ban waves (e.g. a DDoS generating hundreds of decisions per minute). For most deployments, the default of 4 is sufficient — AbuseIPDB API latency, not throughput, is the limiting factor.
 
@@ -530,7 +532,7 @@ docker run \
   developingchet/cs-abuseipdb-bouncer:latest
 ```
 
-The seccomp profile is enforced on all modern Linux kernels (4.8+). On Docker Desktop for macOS and Windows the profile is not applied (the host kernel does not support Linux seccomp), but Docker will still fail to start the container if the file path does not exist — download the file or remove the line.
+The seccomp profile is enforced on all modern Linux kernels (4.8+). Docker Desktop for macOS and Windows runs containers in a Linux VM and applies the profile there too. On every platform Docker fails to start the container if the file path does not exist — download the file or remove the line.
 
 #### If the container fails to start with "operation not permitted"
 
@@ -582,7 +584,7 @@ scrape_configs:
       - json:
           expressions:
             level: level
-            msg: msg
+            msg: message
       - labels:
           level:
 ```
