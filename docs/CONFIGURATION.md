@@ -275,10 +275,10 @@ Expired entries are pruned from `state.db` by the background janitor (see `JANIT
 #### POLL_INTERVAL
 
 **Type:** Duration string
-**Default:** `2s`
+**Default:** `10s` (matches the CrowdSec specification's recommended pull period)
 **Minimum:** `2s`
 
-How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 2 s are rejected at startup. The bundled `docker-compose.yml` sets `30s`.
+How often the bouncer polls the LAPI stream endpoint for new decisions. Values below 2 s are rejected at startup. Use `2s` when you want near-real-time reporting; the default of 10 s cuts default LAPI traffic by 80%. The bundled `docker-compose.yml` sets `30s`.
 
 #### LOG_LEVEL
 

@@ -8,6 +8,7 @@ Complete installation procedures for the CrowdSec AbuseIPDB Bouncer.
 - [Step-by-Step Installation](#step-by-step-installation)
 - [Post-Installation Verification](#post-installation-verification)
 - [Integration Examples](#integration-examples)
+- [Uninstalling](#uninstalling)
 
 ## Prerequisites
 
@@ -376,6 +377,29 @@ No `extra_hosts` entry is needed.
 ### Example 5: Kubernetes Deployment
 
 Kubernetes support is not included in this repository. If you need a Helm chart or Kubernetes manifests, open a discussion at https://github.com/developingchet/cs-abuseipdb-bouncer/discussions -- community contributions are welcome.
+
+---
+
+## Uninstalling
+
+To remove the bouncer and its CrowdSec registration (for the Docker Compose installation from [Step-by-Step Installation](#step-by-step-installation)):
+
+```bash
+# Stop and remove the bouncer container
+docker compose down
+
+# Optional: also delete its persistent Docker volume
+docker compose down --volumes
+
+# Revoke the bouncer's CrowdSec API registration
+docker exec crowdsec cscli bouncers delete abuseipdb-bouncer
+```
+
+**Note on `--volumes`:** Only use `docker compose down --volumes` if you are sure the Compose project's volumes can safely be deleted. This removes the named volume that holds `state.db` (daily quota counts and per-IP cooldowns), and it also removes any *other* volumes declared in the same `docker-compose.yml`. If any other service shares this Compose project, check `docker volume ls` first. Without `--volumes`, the volume is kept and reused if you reinstall later.
+
+**Reinstalling later:** If you kept the volume, repeat the installation from step 1 with a fresh API key (the old registration was revoked above); the bouncer reuses the existing quota and cooldown state. If you deleted the volume, simply reinstall — everything starts from zero.
+
+**Reports are not retracted:** Uninstalling does not retract reports already sent to AbuseIPDB. Previously reported IPs remain in the AbuseIPDB database, and reports cannot be deleted after the fact. If the bouncer has reported your own infrastructure by mistake, see the [AbuseIPDB FAQ](https://www.abuseipdb.com/faq) for options such as whitelisting those IPs to prevent future reports.
 
 ---
 

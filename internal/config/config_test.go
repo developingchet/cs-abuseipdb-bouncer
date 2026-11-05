@@ -54,7 +54,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, time.Duration(0), cfg.MinDuration)
 	assert.Equal(t, "info", cfg.LogLevel)
 	assert.Equal(t, "json", cfg.LogFormat)
-	assert.Equal(t, 2*time.Second, cfg.PollInterval)
+	assert.Equal(t, 10*time.Second, cfg.PollInterval)
 	assert.Equal(t, 10*time.Second, cfg.LAPITimeout)
 	assert.Equal(t, 15*time.Minute, cfg.CooldownDuration)
 	assert.Equal(t, "/data", cfg.DataDir)

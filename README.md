@@ -58,7 +58,7 @@ LAPI requests identify the component as `cs-abuseipdb-bouncer/<VERSION>`.
 │       CrowdSec LAPI          │
 │       (port 8080 / 8443)     │
 └──────────────┬───────────────┘
-               │ polls every POLL_INTERVAL (default 2s;
+               │ polls every POLL_INTERVAL (default 10s;
                │ the bundled docker-compose.yml sets 30s)
                │ GET /v1/decisions/stream
                │
@@ -287,7 +287,7 @@ ABUSEIPDB_DAILY_LIMIT=1000    # Free=1000, Webmaster=3000, Premium=50000
 ABUSEIPDB_PRECHECK=false      # Pre-check /check endpoint before reporting
 ABUSEIPDB_MIN_DURATION=0      # Skip decisions shorter than N seconds
 COOLDOWN_DURATION=15m         # Per-IP cooldown window
-POLL_INTERVAL=2s              # LAPI polling frequency (min 2s; the bundled docker-compose.yml sets 30s)
+POLL_INTERVAL=10s             # LAPI polling frequency (min 2s; the bundled docker-compose.yml sets 30s)
 LOG_LEVEL=info                # trace, debug, info, warn, error
 LOG_FORMAT=json               # json or text
 TLS_SKIP_VERIFY=false         # Skip TLS verification (self-signed certs)
@@ -448,6 +448,14 @@ go test -race ./... -count=1 -timeout=120s
 **Metrics listener on loopback by default.** From v2.5.0, `METRICS_ADDR` defaults to `127.0.0.1:9090` instead of `:9090`. The Docker image sets `METRICS_ADDR=:9090`, so container deployments are unaffected. A native install (systemd, Windows) that is scraped by Prometheus from another host stops answering that scraper after upgrading to v2.5.0, and no warning is logged because the new default is a loopback address. Set `METRICS_ADDR` explicitly, for example `0.0.0.0:9090` or the private interface address the scraper uses, and keep the port behind a firewall since the endpoints are unauthenticated. The bouncer logs a warning at startup whenever `METRICS_ADDR` is not a loopback address.
 
 **New `invalid_ip` skip reason.** A decision whose value is not a single IP address (malformed text, a network wider than `/32` or `/128`, or a zoned IPv6 address) is now dropped before the cooldown and quota checks and counted under `filter="invalid_ip"` in `cs_abuseipdb_decisions_skipped_total`. Earlier versions spent a cooldown entry and a quota unit on such values before AbuseIPDB refused them. Dashboards and alerts that enumerate `filter` label values should include the new one.
+
+### Upgrading to v2.5.3
+
+**`POLL_INTERVAL` now defaults to `10s`.** The built-in default changes from `2s` to `10s`, matching CrowdSec's recommended pull period and cutting default LAPI request traffic by 80%. The configurable minimum remains `2s`. Reporting latency follows the interval: a decision can now reach AbuseIPDB up to 10 s after CrowdSec issues it, instead of 2 s.
+
+Deployments that never set `POLL_INTERVAL` and run the binary directly (systemd, Windows, bare Docker without the bundled compose file) move from 2-second to 10-second polling. The bundled `docker-compose.yml` is unaffected — it sets `POLL_INTERVAL=30s` when the variable is unset. To keep the previous behaviour, set `POLL_INTERVAL=2s` explicitly.
+
+Dashboards that assumed per-poll latencies (e.g. alerting on `cs_abuseipdb_last_lapi_pull_timestamp_seconds` staleness) are also unaffected: `/healthz` marks upstream stale after `max(5 × POLL_INTERVAL, 2m)`, which was already 2 minutes and does not change.
 
 ## Migration from v1.x
 

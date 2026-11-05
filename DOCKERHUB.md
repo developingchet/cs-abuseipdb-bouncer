@@ -80,7 +80,7 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `ABUSEIPDB_MIN_DURATION` | `0` | Skip decisions shorter than N seconds (e.g. `300` ignores 5-minute test bans). |
 | `IP_WHITELIST` | _(none)_ | Comma-separated IPs/CIDRs to skip reporting (e.g. `203.0.113.0/24,2001:db8::/32`). |
 | `COOLDOWN_DURATION` | `15m` | Per-IP cooldown matching AbuseIPDB's deduplication window. |
-| `POLL_INTERVAL` | `2s` | LAPI decision stream polling frequency (minimum: 2s). |
+| `POLL_INTERVAL` | `10s` | LAPI decision stream polling frequency (minimum: 2s). The bundled docker-compose.yml sets `30s` when unset. |
 | `LAPI_TIMEOUT` | `10s` | HTTP timeout for LAPI requests (minimum: 200ms). |
 | `LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | `json` | `json` (structured, for SIEM) or `text` (human-readable). |

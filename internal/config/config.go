@@ -81,7 +81,7 @@ var defaults = map[string]any{
 	"abuseipdb_precheck":     false,
 	"log_level":              "info",
 	"log_format":             "json",
-	"poll_interval":          2 * time.Second,
+	"poll_interval":          10 * time.Second,
 	"lapi_timeout":           10 * time.Second,
 	"cooldown_duration":      15 * time.Minute,
 	"data_dir":               "/data",
