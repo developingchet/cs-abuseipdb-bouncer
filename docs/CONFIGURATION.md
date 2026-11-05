@@ -1,6 +1,5 @@
 # Configuration Reference
-
-Complete reference for all configuration options in the CrowdSec AbuseIPDB Bouncer v2.0.
+Complete reference for all configuration options in the CrowdSec AbuseIPDB Bouncer.
 
 ## Table of Contents
 
