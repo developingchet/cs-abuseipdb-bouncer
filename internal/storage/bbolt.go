@@ -120,6 +120,24 @@ func (s *BoltStore) QuotaRecord() error {
 	})
 }
 
+func (s *BoltStore) QuotaRelease() error {
+	today := utcDateString()
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketQuota)
+		rec := decodeQuota(b.Get(keyToday))
+		if rec.Date != today || rec.Count == 0 {
+			return nil
+		}
+		rec.Count--
+
+		data, err := marshalQuotaRecord(rec)
+		if err != nil {
+			return err
+		}
+		return b.Put(keyToday, data)
+	})
+}
+
 func (s *BoltStore) readQuota() quotaRecord {
 	var rec quotaRecord
 	_ = s.db.View(func(tx *bolt.Tx) error {

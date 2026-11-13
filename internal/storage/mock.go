@@ -75,6 +75,16 @@ func (m *MemStore) QuotaRecord() error {
 	return nil
 }
 
+func (m *MemStore) QuotaRelease() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshDate()
+	if m.quotaCount > 0 {
+		m.quotaCount--
+	}
+	return nil
+}
+
 // --- Cooldown ---
 
 func (m *MemStore) CooldownAllow(ip string) bool {

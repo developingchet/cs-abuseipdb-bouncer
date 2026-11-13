@@ -172,6 +172,13 @@ func (p *workerPool) reportTo(ctx context.Context, s sink.Sink, r *sink.Report, 
 		log.Debug().Str("ip", r.IP).Str("sink", s.Name()).Msg("already reported within the upstream dedup window")
 		return false, 0
 
+	case errors.Is(err, sink.ErrWhitelisted):
+		p.health.recordSinkOK()
+		metrics.DecisionsSkipped.WithLabelValues("abuseipdb_whitelisted").Inc()
+		log.Info().Str("ip", r.IP).Str("sink", s.Name()).Msg("skipped: whitelisted by AbuseIPDB")
+		p.releaseQuota(r.IP)
+		return false, 0
+
 	case errors.As(err, &rl):
 		p.health.recordSinkOK()
 		return false, max(rl.RetryAfter, time.Second)
@@ -192,6 +199,17 @@ func (p *workerPool) reportTo(ctx context.Context, s sink.Sink, r *sink.Report, 
 		log.Error().Err(err).Str("sink", s.Name()).Str("ip", r.IP).Msg("report failed")
 		return false, transientRetryDelay(attempt)
 	}
+}
+
+// releaseQuota gives back the quota unit admit charged for a decision that
+// was not reported. The cooldown stays, so the IP is not checked again until
+// it expires.
+func (p *workerPool) releaseQuota(ip string) {
+	if err := p.store.QuotaRelease(); err != nil {
+		log.Warn().Err(err).Str("ip", ip).Msg("could not return the quota unit of an unreported decision")
+		return
+	}
+	metrics.QuotaRemaining.Set(float64(p.store.QuotaRemaining()))
 }
 
 // transientRetryDelay returns the backoff before retrying after the given

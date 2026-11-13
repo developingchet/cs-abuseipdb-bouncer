@@ -121,6 +121,28 @@ func TestMemStore_ConsumeMethods(t *testing.T) {
 	}
 }
 
+func TestMemStore_QuotaRelease(t *testing.T) {
+	m := NewMemStore(10, time.Minute)
+	if err := m.QuotaRelease(); err != nil {
+		t.Fatalf("QuotaRelease: %v", err)
+	}
+	if got := m.QuotaCount(); got != 0 {
+		t.Fatalf("QuotaCount after release at zero got=%d want=0", got)
+	}
+
+	for range 2 {
+		if err := m.QuotaRecord(); err != nil {
+			t.Fatalf("QuotaRecord: %v", err)
+		}
+	}
+	if err := m.QuotaRelease(); err != nil {
+		t.Fatalf("QuotaRelease: %v", err)
+	}
+	if got := m.QuotaCount(); got != 1 {
+		t.Fatalf("QuotaCount after release got=%d want=1", got)
+	}
+}
+
 func TestMemStore_RefreshDateResetsQuota(t *testing.T) {
 	m := NewMemStore(10, time.Minute)
 	if err := m.QuotaRecord(); err != nil {

@@ -403,7 +403,7 @@ func TestReport_WithPrecheck_Whitelisted(t *testing.T) {
 	})
 
 	err := c.Report(context.Background(), &sink.Report{IP: "203.0.113.42", Scenario: "crowdsecurity/ssh-bf"})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, sink.ErrWhitelisted)
 	assert.True(t, checkCalled)
 	assert.False(t, reportCalled, "should not report whitelisted IPs")
 }

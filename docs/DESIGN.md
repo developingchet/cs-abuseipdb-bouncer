@@ -244,6 +244,7 @@ type workerPool struct {
 |-------------|--------|--------|
 | success | OK | count as sent |
 | `sink.ErrDuplicate` (429 "same IP … once in 15 minutes") | OK | drop, `duplicate` skip metric |
+| `sink.ErrWhitelisted` (precheck: whitelisted by AbuseIPDB) | OK | drop, `abuseipdb_whitelisted` skip metric |
 | `sink.ErrRateLimit` (other 429) | OK | queue for retry after `RetryAfter` |
 | `sink.ErrPermanent` (422 validation) | OK | drop, `rejected` skip metric |
 | context cancelled (shutdown) | — | queue for retry in 10 s |

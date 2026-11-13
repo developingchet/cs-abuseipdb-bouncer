@@ -289,7 +289,7 @@ Before submitting, verify:
 - [ ] `go mod verify` passes
 - [ ] `go run -modfile=.github/tools/go.mod golang.org/x/vuln/cmd/govulncheck ./...` reports no vulnerabilities
 - [ ] `golangci-lint run ./...` reports no issues (CI blocks on lint failures)
-- [ ] `go test -cover ./cmd/... ./internal/...` shows 100% statement coverage for every package (CI fails any package below 100%)
+- [ ] `make coverage-check` (`scripts/test-coverage.sh`) passes: every package has 100% statement coverage, as CI requires
 - [ ] Documentation updated if applicable
 - [ ] No sensitive data (API keys, real IP addresses) in commits
 - [ ] Commit messages are clear and descriptive

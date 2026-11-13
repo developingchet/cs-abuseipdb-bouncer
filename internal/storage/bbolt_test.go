@@ -346,6 +346,47 @@ func TestBoltStore_QuotaConsume_StaleRecordBranch(t *testing.T) {
 	assert.Equal(t, 1, s.QuotaCount())
 }
 
+func TestBoltStore_QuotaRelease(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+
+	require.NoError(t, s.QuotaRelease(), "release with nothing recorded")
+	assert.Equal(t, 0, s.QuotaCount())
+
+	require.NoError(t, s.QuotaRecord())
+	require.NoError(t, s.QuotaRecord())
+	require.NoError(t, s.QuotaRelease())
+	assert.Equal(t, 1, s.QuotaCount())
+}
+
+func TestBoltStore_QuotaRelease_StaleDayUnchanged(t *testing.T) {
+	s := newTestStore(t, 1000, time.Minute)
+	stale, err := json.Marshal(quotaRecord{Count: 7, Date: "2000-01-01"})
+	require.NoError(t, err)
+	require.NoError(t, s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketQuota).Put(keyToday, stale)
+	}))
+
+	require.NoError(t, s.QuotaRelease())
+
+	require.NoError(t, s.db.View(func(tx *bolt.Tx) error {
+		assert.Equal(t, stale, tx.Bucket(bucketQuota).Get(keyToday))
+		return nil
+	}))
+}
+
+func TestBoltStore_QuotaRelease_MarshalError(t *testing.T) {
+	installBoltSeams(t)
+	s := newTestStore(t, 1000, time.Minute)
+	require.NoError(t, s.QuotaRecord())
+	marshalQuotaRecord = func(any) ([]byte, error) {
+		return nil, errors.New("marshal failed")
+	}
+
+	err := s.QuotaRelease()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal failed")
+}
+
 func TestBoltStore_QuotaRecord_MarshalError(t *testing.T) {
 	installBoltSeams(t)
 	s := newTestStore(t, 1000, time.Minute)

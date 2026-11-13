@@ -24,12 +24,12 @@ func (f PushFunc) Push(ctx context.Context, payload MetricsPayload) error {
 
 // Sender periodically flushes in-memory counters to /usage-metrics.
 type Sender struct {
-	version string
-	started time.Time
+	version  string
+	started  time.Time
 	interval time.Duration
-	counter *Counter
-	pusher  Pusher
-	now     func() time.Time
+	counter  *Counter
+	pusher   Pusher
+	now      func() time.Time
 }
 
 // NewSender builds a sender for the given interval and pusher.

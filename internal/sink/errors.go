@@ -22,6 +22,11 @@ func (e ErrRateLimit) Error() string {
 // a failure.
 var ErrDuplicate = errors.New("duplicate report rejected by upstream")
 
+// ErrWhitelisted is returned when the upstream service lists the IP as
+// whitelisted, so the report was deliberately not sent. Callers should count
+// it as a skip: neither a sent report nor a failure.
+var ErrWhitelisted = errors.New("ip is whitelisted upstream; report not sent")
+
 // ErrUnauthorized is returned when the upstream API rejected the credentials.
 // It is retryable: queued reports are delivered once the key is fixed.
 var ErrUnauthorized = errors.New("unauthorized: upstream rejected the API key")

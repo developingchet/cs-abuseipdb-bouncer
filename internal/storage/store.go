@@ -11,6 +11,11 @@ type Store interface {
 	QuotaRemaining() int // limit - count, clamped to zero
 	QuotaRecord() error
 
+	// QuotaRelease returns one unit of today's quota for a decision that was
+	// admitted but deliberately not reported. A count already at zero, or a
+	// count from a previous day, is left unchanged.
+	QuotaRelease() error
+
 	// QuotaConsume atomically checks and consumes one quota unit in a single
 	// bolt.Update. Returns (true, nil) if allowed, (false, nil) if exhausted.
 	QuotaConsume() (bool, error)

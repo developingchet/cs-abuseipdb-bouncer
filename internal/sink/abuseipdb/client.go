@@ -41,10 +41,10 @@ const (
 
 // ClientConfig holds configuration for the AbuseIPDB client.
 type ClientConfig struct {
-	APIKey    string
-	Precheck  bool
-	ReportURL string // Override for testing
-	CheckURL  string // Override for testing
+	APIKey         string
+	Precheck       bool
+	ReportURL      string // Override for testing
+	CheckURL       string // Override for testing
 	MaxRetries     int
 	InitialBackoff time.Duration
 	SleepFn        func(time.Duration)
@@ -52,11 +52,11 @@ type ClientConfig struct {
 
 // Client implements the sink.Sink interface for AbuseIPDB.
 type Client struct {
-	apiKey     string
-	precheck   bool
-	reportURL  string
-	checkURL   string
-	httpClient *http.Client
+	apiKey         string
+	precheck       bool
+	reportURL      string
+	checkURL       string
+	httpClient     *http.Client
 	maxRetries     int
 	initialBackoff time.Duration
 	sleepFn        func(time.Duration)
@@ -124,8 +124,7 @@ func (c *Client) Report(ctx context.Context, r *sink.Report) error {
 		if err != nil {
 			log.Warn().Err(err).Str("ip", ip).Msg("precheck error, proceeding with report")
 		} else if whitelisted {
-			log.Info().Str("ip", ip).Msg("skip whitelisted")
-			return nil
+			return sink.ErrWhitelisted
 		}
 	}
 
