@@ -96,10 +96,27 @@ func TestProcessJob_Whitelisted_SkippedNotCounted(t *testing.T) {
 
 	p.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.17")})
 
+	assert.Equal(t, 0, store.QuotaCount(), "the admitted quota unit is returned")
+	assert.False(t, store.CooldownAllow("203.0.113.17"), "the cooldown stays")
 	assert.Empty(t, dueRetries(t, store))
 	assert.Equal(t, sentBefore, testutil.ToFloat64(metrics.ReportsSent))
 	assert.Equal(t, skipBefore+1, testutil.ToFloat64(metrics.DecisionsSkipped.WithLabelValues("abuseipdb_whitelisted")))
 	assert.EqualValues(t, 0, p.counter.Processed())
+	assert.EqualValues(t, 0, p.health.sinkFailures.Load())
+}
+
+// releaseErrStore fails QuotaRelease and otherwise behaves like MemStore.
+type releaseErrStore struct{ *storage.MemStore }
+
+func (s releaseErrStore) QuotaRelease() error { return errors.New("disk full") }
+
+func TestProcessJob_Whitelisted_ReleaseFailureKeepsUnit(t *testing.T) {
+	store := releaseErrStore{storage.NewMemStore(100, time.Minute)}
+	p := newOutcomePool(store, &errSink{err: sink.ErrWhitelisted})
+
+	p.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.18")})
+
+	assert.Equal(t, 1, store.QuotaCount())
 	assert.EqualValues(t, 0, p.health.sinkFailures.Load())
 }
 

@@ -718,6 +718,7 @@ func (s *errorStore) QuotaAllow() bool                                          
 func (s *errorStore) QuotaCount() int                                            { return 0 }
 func (s *errorStore) QuotaLimit() int                                            { return 1 }
 func (s *errorStore) QuotaRemaining() int                                        { return 1 }
+func (s *errorStore) QuotaRelease() error                                        { return nil }
 func (s *errorStore) QuotaRecord() error                                         { return nil }
 func (s *errorStore) QuotaConsume() (bool, error)                                { return true, nil }
 func (s *errorStore) CooldownAllow(string) bool                                  { return true }
@@ -749,6 +750,7 @@ func (s *recordErrorStore) QuotaAllow() bool                                  { 
 func (s *recordErrorStore) QuotaCount() int                                   { return 0 }
 func (s *recordErrorStore) QuotaLimit() int                                   { return 1000 }
 func (s *recordErrorStore) QuotaRemaining() int                               { return 999 }
+func (s *recordErrorStore) QuotaRelease() error                               { return nil }
 func (s *recordErrorStore) QuotaRecord() error                                { return errors.New("quota record failed") }
 func (s *recordErrorStore) QuotaConsume() (bool, error)                       { return true, nil }
 func (s *recordErrorStore) CooldownAllow(string) bool                         { return true }

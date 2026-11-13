@@ -76,7 +76,7 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. The image sets `:9090`; the binary on its own defaults to `127.0.0.1:9090`. A warning is logged at startup when the address is not loopback, since the endpoints are unauthenticated — publish the port only to `127.0.0.1` or a private network. Ignored when `METRICS_ENABLED=false`. Set to empty string to disable. |
 | `CONFIG_FILE` | _(none)_ | Optional path to a YAML config file (alternative / supplement to env vars). |
 | `ABUSEIPDB_DAILY_LIMIT` | `1000` | Daily report quota (free=1000, webmaster=3000, premium=50000). |
-| `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs; the local daily quota and cooldown are still charged). Uses one call from the separate `/check` daily quota per decision. |
+| `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs and returns their daily quota unit; the cooldown still applies). Uses one call from the separate `/check` daily quota per decision. |
 | `ABUSEIPDB_MIN_DURATION` | `0` | Skip shorter decisions: whole seconds or a duration (`300` or `5m` ignores 5-minute test bans). |
 | `IP_WHITELIST` | _(none)_ | Comma-separated IPs/CIDRs to skip reporting (e.g. `203.0.113.0/24,2001:db8::/32`). |
 | `COOLDOWN_DURATION` | `15m` | Per-IP cooldown matching AbuseIPDB's deduplication window. |

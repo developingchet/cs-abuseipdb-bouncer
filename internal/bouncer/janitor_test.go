@@ -113,6 +113,7 @@ func (s *janitorErrorStore) QuotaAllow() bool                     { return true 
 func (s *janitorErrorStore) QuotaCount() int                      { return 0 }
 func (s *janitorErrorStore) QuotaLimit() int                      { return 1 }
 func (s *janitorErrorStore) QuotaRemaining() int                  { return 1 }
+func (s *janitorErrorStore) QuotaRelease() error                  { return nil }
 func (s *janitorErrorStore) QuotaRecord() error                   { return nil }
 func (s *janitorErrorStore) QuotaConsume() (bool, error)          { return true, nil }
 func (s *janitorErrorStore) CooldownAllow(string) bool            { return true }
