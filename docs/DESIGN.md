@@ -12,6 +12,7 @@ Architecture decisions and design philosophy for the CrowdSec AbuseIPDB Bouncer.
 - [Sink Interface](#sink-interface)
 - [State Management](#state-management)
 - [Retry Logic](#retry-logic)
+- [Health Endpoints](#health-endpoints)
 - [Supply-Chain Security](#supply-chain-security)
 - [Testing Strategy](#testing-strategy)
 
@@ -37,26 +38,17 @@ Architecture decisions and design philosophy for the CrowdSec AbuseIPDB Bouncer.
 
 The previous implementation used three layers:
 
-```
-custom-bouncer binary  (polls LAPI, deduplicates, spawns script)
-       |
-       | JSON via stdin
-       v
-reporter.sh            (filters, maps categories, enforces state)
-       |
-       | curl subprocess
-       v
-AbuseIPDB API
+```mermaid
+flowchart TD
+    cb["custom-bouncer binary<br/>(polls LAPI, deduplicates, spawns script)"] -->|"JSON via stdin"| sh["reporter.sh<br/>(filters, maps categories, enforces state)"]
+    sh -->|"curl subprocess"| api["AbuseIPDB API"]
 ```
 
 The current implementation uses one:
 
-```
-cs-abuseipdb-bouncer   (polls LAPI, filters, maps, enforces state, reports)
-       |
-       | net/http (TLS 1.2+)
-       v
-AbuseIPDB API
+```mermaid
+flowchart TD
+    b["cs-abuseipdb-bouncer<br/>(polls LAPI, filters, maps, enforces state, reports)"] -->|"net/http (TLS 1.2+)"| api["AbuseIPDB API"]
 ```
 
 Removing two layers eliminates:
@@ -139,64 +131,43 @@ Decisions pass through two ordered pipelines:
 
 Eight filters (nine when `IP_WHITELIST` is set) run synchronously in the event loop before a decision is enqueued for the worker pool. Because these filters perform no I/O, they cannot block the loop.
 
+```mermaid
+flowchart TD
+    d(["Decision from LAPI"]) --> f1["1. ActionFilter(add)"]
+    f1 -->|pass| f2["2. ScenarioExclude(impossible-travel, impossible_travel)"]
+    f2 -->|pass| f3["3. OriginAllow(crowdsec, cscli)"]
+    f3 -->|pass| f4["4. ScopeAllow(ip)"]
+    f4 -->|pass| f5["5. ValueRequired()"]
+    f5 -->|pass| f6["6. IPValue()<br/>canonicalises the value: unmaps ::ffff:a.b.c.d,<br/>drops /32 and /128"]
+    f6 -->|pass| f7["7. PrivateIPReject()"]
+    f7 -->|pass| f8["8. WhitelistFilter(cfg)<br/>only when IP_WHITELIST is set"]
+    f8 -->|pass| f9["9. MinDurationFilter(cfg)"]
+    f9 -->|pass| q(["Enqueue to the worker pool<br/>non-blocking, dropped when full"])
+    f1 -.->|"action is not add"| skip(("skipped"))
+    f2 -.->|"account heuristic"| skip
+    f3 -.->|"any other origin<br/>(CAPI, lists, cscli-import…)"| skip
+    f4 -.->|"range, ASN or country"| skip
+    f5 -.->|"empty value"| skip
+    f6 -.->|"not exactly one IP"| skip
+    f7 -.->|"private, loopback, CGNAT…"| skip
+    f8 -.->|"whitelisted"| skip
+    f9 -.->|"ban too short"| skip
 ```
-Decision from LAPI
-       |
-       v
-1. ActionFilter("add")          -- reject deletes
-       |
-       v
-2. ScenarioExclude(             -- reject account heuristics
-     "impossible-travel",
-     "impossible_travel")
-       |
-       v
-3. OriginAllow(                 -- reject CAPI/lists
-     "crowdsec", "cscli")
-       |
-       v
-4. ScopeAllow("ip")             -- reject ranges/ASNs/countries
-       |
-       v
-5. ValueRequired()              -- reject empty value field
-       |
-       v
-6. IPValue()                    -- reject anything but one IP address;
-                                   canonicalise the value (unmap
-                                   ::ffff:a.b.c.d, drop /32 and /128)
-       |
-       v
-7. PrivateIPReject()            -- reject RFC1918, loopback, CGNAT, etc.
-       |
-       v
-8. WhitelistFilter(cfg)         -- reject IP_WHITELIST matches
-                                   (added only when IP_WHITELIST is set)
-       |
-       v
-9. MinDurationFilter(cfg)       -- reject short bans (optional)
-       |
-       v
-   [enqueue to worker pool — non-blocking, drops on overflow]
-```
+
+Deleted decisions in the stream are logged at debug level and never enter this pipeline, so the `action` filter is a defensive check.
 
 ### Worker-Side Checks (atomic bbolt transactions)
 
 Each worker dequeues a job and runs one atomic store operation, `Admit(ip)`, before calling any sink. Both checks share a single `bolt.Update`:
 
-```
-Worker receives job
-       |
-       v
-10. cooldown check              -- read expiry for ip
-       |  active → skip (nothing written, no quota consumed)
-       v
-11. quota check                 -- read today's count
-       |  exhausted → skip (nothing written)
-       v
-   set cooldown expiry, increment count, commit
-       |
-       v
-   AbuseIPDB sink
+```mermaid
+flowchart TD
+    job(["Worker receives job"]) --> c10{"10. Cooldown active for this IP?"}
+    c10 -->|"yes: skip, nothing written,<br/>no quota used"| done(("skipped"))
+    c10 -->|no| c11{"11. Daily quota exhausted?"}
+    c11 -->|"yes: skip, nothing written"| done
+    c11 -->|no| commit["Set cooldown expiry, increment count, commit"]
+    commit --> sink["AbuseIPDB sink"]
 ```
 
 The order (cooldown before quota) is intentional: a cooldown hit does not consume a quota unit. Writing only after both checks pass means that once the daily quota is exhausted, new IPs add no cooldown entries, so a flood of unique decisions cannot grow `state.db`.
@@ -221,24 +192,24 @@ Community blocklist (CAPI) IPs are already globally aggregated by CrowdSec. Re-r
 
 Private and reserved IP ranges are rejected by `internal/decision/ip.go` using `net/netip`, which is exact and immune to regex edge cases:
 
-```
-10.0.0.0/8      RFC 1918 private
-172.16.0.0/12   RFC 1918 private
-192.168.0.0/16  RFC 1918 private
-127.0.0.0/8     Loopback (RFC 5735)
-169.254.0.0/16  Link-local (RFC 3927)
-0.0.0.0/8       This network (RFC 1122)
-100.64.0.0/10   CGNAT (RFC 6598)
-192.0.0.0/24    IETF protocol assignments (RFC 6890)
-198.18.0.0/15   Benchmarking (RFC 2544)
-224.0.0.0/4     Multicast
-240.0.0.0/4     Reserved, incl. 255.255.255.255 broadcast
-::/128          IPv6 unspecified
-::1/128         IPv6 loopback (RFC 4291)
-fe80::/10       IPv6 link-local (RFC 4291)
-fc00::/7        IPv6 unique local (RFC 4193)
-ff00::/8        IPv6 multicast
-```
+| Range | Purpose |
+|---|---|
+| `10.0.0.0/8` | RFC 1918 private |
+| `172.16.0.0/12` | RFC 1918 private |
+| `192.168.0.0/16` | RFC 1918 private |
+| `127.0.0.0/8` | Loopback (RFC 5735) |
+| `169.254.0.0/16` | Link-local (RFC 3927) |
+| `0.0.0.0/8` | This network (RFC 1122) |
+| `100.64.0.0/10` | CGNAT (RFC 6598) |
+| `192.0.0.0/24` | IETF protocol assignments (RFC 6890) |
+| `198.18.0.0/15` | Benchmarking (RFC 2544) |
+| `224.0.0.0/4` | Multicast |
+| `240.0.0.0/4` | Reserved, including the 255.255.255.255 broadcast address |
+| `::/128` | IPv6 unspecified |
+| `::1/128` | IPv6 loopback (RFC 4291) |
+| `fe80::/10` | IPv6 link-local (RFC 4291) |
+| `fc00::/7` | IPv6 unique local (RFC 4193) |
+| `ff00::/8` | IPv6 multicast |
 
 IPv4-mapped IPv6 addresses (`::ffff:10.0.0.1`) are unmapped before the check. The RFC 5737 / RFC 3849 documentation ranges are intentionally not listed: they never occur in real traffic and the test suite uses them as stand-ins for public IPs.
 
@@ -276,7 +247,7 @@ type workerPool struct {
 | `sink.ErrRateLimit` (other 429) | OK | queue for retry after `RetryAfter` |
 | `sink.ErrPermanent` (422 validation) | OK | drop, `rejected` skip metric |
 | context cancelled (shutdown) | — | queue for retry in 10 s |
-| anything else (network, 5xx, `sink.ErrUnauthorized`) | failure | queue with 1 m → 30 m exponential backoff |
+| anything else (network errors, 5xx and other unexpected statuses, `sink.ErrUnauthorized`) | failure | queue with 1 m → 30 m exponential backoff |
 
 A decision is attempted at most 6 times (`maxDeliveryAttempts`); the attempt count is persisted with the retry entry so the cap holds across restarts.
 
@@ -363,6 +334,7 @@ This atomic check-and-set eliminates the TOCTOU race present in the earlier sepa
 
 1. **Prune:** `store.CooldownPrune()` deletes all cooldown entries whose expiry timestamp is in the past. This bounds the growth of `state.db` to the number of unique IPs seen within the cooldown window. `store.RetryPrune()` removes retry entries that became due more than 24 hours ago.
 2. **DB size metric:** `os.Stat(store.DBPath()).Size()` is written to the `cs_abuseipdb_bbolt_db_size_bytes` Prometheus gauge. This metric is useful for detecting unexpected growth (e.g. a misconfigured cooldown of 0 seconds generating millions of entries).
+3. **Queue and quota gauges:** `cs_abuseipdb_retry_queue_size` and `cs_abuseipdb_quota_remaining` are refreshed from the store.
 
 The janitor exits cleanly when its context is cancelled (the same context as the bouncer's `Run` loop).
 
@@ -379,32 +351,25 @@ The janitor exits cleanly when its context is cancelled (the same context as the
 
 The AbuseIPDB client uses a custom retry strategy rather than a generic retry library. The semantics are too specific for a general-purpose implementation:
 
-```
-Attempt 1
-  |
-  +-- Success (200) --------------> done
-  +-- 429 "same IP address" ------> sink.ErrDuplicate (no retry)
-  +-- 429 other (rate limit) -----> sink.ErrRateLimit{RetryAfter} (no sleep)
-  +-- 422 (validation) -----------> sink.ErrPermanent (no retry)
-  +-- 401 (unauthorized) ---------> sink.ErrUnauthorized (no in-line retry)
-  +-- Network error / 5xx --------> wait 5s, retry
-  |
-Attempt 2 (if retrying)
-  |
-  +-- Same as above
-  +-- Network error / 5xx --------> wait 10s, retry
-  |
-Attempt 3 (if retrying)
-  |
-  +-- Failure --------------------> return error
+```mermaid
+flowchart TD
+    a(["Attempt n (n = 1, 2, 3)"]) --> r{"Response"}
+    r -->|"200"| ok(["Done"])
+    r -->|"429: same IP address"| dup(["sink.ErrDuplicate, no retry"])
+    r -->|"429: rate limit"| rl(["sink.ErrRateLimit with RetryAfter, no sleep"])
+    r -->|"422 validation"| perm(["sink.ErrPermanent, no retry"])
+    r -->|"401 unauthorized"| auth(["sink.ErrUnauthorized, no in-line retry"])
+    r -->|"network error, 5xx or<br/>other unexpected status"| last{"n = 3?"}
+    last -->|yes| fail(["Return the error"])
+    last -->|"no: wait 5s after attempt 1,<br/>10s after attempt 2"| a
 ```
 
 Key decisions (checked against https://docs.abuseipdb.com/):
 - AbuseIPDB rejects a repeat report of the same IP within 15 minutes with **429**, not 422. It is recognised by its message and dropped: resending cannot succeed.
 - 422 is AbuseIPDB's validation error (bad IP, bad categories). It is a real failure and is logged at error level, not counted as a sent report.
 - For other 429s the wait comes from the `Retry-After` header (seconds), falling back to `X-RateLimit-Reset` (epoch of the daily reset), then an "in N seconds" hint in the body, then 60 s; capped at 24 h. The client never sleeps on 429 — the worker pool persists the decision to the retry queue.
-- 401 is not retried in-line, but the pool queues the decision with backoff: once the key is fixed and the container restarted, queued reports are delivered.
-- Network errors and 5xx responses retry in-line with a doubling backoff (5 s, 10 s); if all three attempts fail, the pool queues the decision.
+- 401 is not retried in-line, but the pool queues the decision with backoff: once the key is fixed and the container restarted, queued reports are delivered. The sixth attempt is the last (about half an hour of backoff), so a key fixed later loses those decisions.
+- Network errors, 5xx responses and any other unexpected status retry in-line with a doubling backoff (5 s, 10 s); if all three attempts fail, the pool queues the decision.
 
 ---
 
@@ -453,7 +418,7 @@ The SBOM lists every package present in the image, enabling downstream consumers
 
 ### Trivy Scan
 
-Every release pipeline runs `aquasecurity/trivy-action` against the built image before pushing it to either registry. The step fails (and blocks publication) if any HIGH or CRITICAL CVEs are found in packages with available fixes.
+Every release pipeline runs `aquasecurity/trivy-action` against the linux/amd64 build of the image before pushing it to either registry; the weekly image scan covers both published architectures. The step fails (and blocks publication) if any HIGH or CRITICAL CVEs are found in packages with available fixes.
 
 ---
 
