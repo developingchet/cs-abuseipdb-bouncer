@@ -107,7 +107,7 @@ Once the limit is reached, all subsequent decisions are dropped with a `quota` s
 **Default:** `false`
 **Options:** `true`/`false`, `1`/`0`, `t`/`f` (also `TRUE`/`True`, `FALSE`/`False`, `T`, `F`); `yes`/`no` are rejected
 
-When `true`, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped. The worker has already charged the local daily quota and set the cooldown by then, so only AbuseIPDB's own report quota is saved.
+When `true`, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped. The worker has already charged the local daily quota and set the cooldown by then, so only AbuseIPDB's own report quota is saved. The skip is counted under `cs_abuseipdb_decisions_skipped_total{filter="abuseipdb_whitelisted"}`, not as a sent report.
 
 **Trade-offs:**
 - Saves AbuseIPDB report quota on whitelisted IPs (CDNs, search engines, trusted infrastructure)

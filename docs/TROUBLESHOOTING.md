@@ -161,6 +161,7 @@ Look for `"message":"decision filtered (pre-queue)"` and `"decision filtered (co
 | `invalid_ip` | Value is not a single IP address (malformed, a network wider than /32 or /128, or a zoned IPv6 address) | Indicates a malformed decision in CrowdSec; nothing is reported and no quota is used |
 | `private_ip` | Private/reserved IP range | Expected -- private IPs are not reported |
 | `whitelist` | IP is in `IP_WHITELIST` | Expected — trusted range you configured |
+| `abuseipdb_whitelisted` | AbuseIPDB's `/check` lists the IP as whitelisted (`ABUSEIPDB_PRECHECK=true`) | Expected — the report is not sent |
 | `min_duration` | Decision duration is below ABUSEIPDB_MIN_DURATION | Lower or disable ABUSEIPDB_MIN_DURATION |
 | `quota` | Daily limit reached | Wait for UTC midnight reset or increase ABUSEIPDB_DAILY_LIMIT |
 | `cooldown` | IP was reported within the cooldown window | Normal -- prevents duplicate reports |

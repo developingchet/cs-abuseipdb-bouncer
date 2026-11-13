@@ -13,6 +13,7 @@ import (
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/metrics"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/sink"
 	"github.com/developingchet/cs-abuseipdb-bouncer/internal/storage"
+	"github.com/developingchet/cs-abuseipdb-bouncer/internal/telemetry"
 )
 
 // errSink returns err from every Report call.
@@ -83,6 +84,22 @@ func TestProcessJob_Duplicate_NotRetriedNotCounted(t *testing.T) {
 	assert.Empty(t, dueRetries(t, store))
 	assert.Equal(t, sentBefore, testutil.ToFloat64(metrics.ReportsSent))
 	assert.Equal(t, dupBefore+1, testutil.ToFloat64(metrics.DecisionsSkipped.WithLabelValues("duplicate")))
+	assert.EqualValues(t, 0, p.health.sinkFailures.Load())
+}
+
+func TestProcessJob_Whitelisted_SkippedNotCounted(t *testing.T) {
+	store := storage.NewMemStore(100, time.Minute)
+	p := newOutcomePool(store, &errSink{err: sink.ErrWhitelisted})
+	p.counter = telemetry.NewCounter()
+	sentBefore := testutil.ToFloat64(metrics.ReportsSent)
+	skipBefore := testutil.ToFloat64(metrics.DecisionsSkipped.WithLabelValues("abuseipdb_whitelisted"))
+
+	p.processJob(context.Background(), workerJob{d: makeDecision("203.0.113.17")})
+
+	assert.Empty(t, dueRetries(t, store))
+	assert.Equal(t, sentBefore, testutil.ToFloat64(metrics.ReportsSent))
+	assert.Equal(t, skipBefore+1, testutil.ToFloat64(metrics.DecisionsSkipped.WithLabelValues("abuseipdb_whitelisted")))
+	assert.EqualValues(t, 0, p.counter.Processed())
 	assert.EqualValues(t, 0, p.health.sinkFailures.Load())
 }
 

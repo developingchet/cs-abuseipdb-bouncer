@@ -1,7 +1,6 @@
 package telemetry
 
 import (
-	"runtime"
 	"strings"
 	"time"
 )
@@ -68,12 +67,9 @@ func BuildMetricsPayloadAt(
 	return MetricsPayload{
 		RemediationComponents: []RemediationComponent{
 			{
-				Type:    "cs-abuseipdb-bouncer",
-				Version: normalizeVersion(version),
-				OS: OSInfo{
-					Name:    runtime.GOOS,
-					Version: runtime.GOARCH,
-				},
+				Type:                "cs-abuseipdb-bouncer",
+				Version:             normalizeVersion(version),
+				OS:                  hostOS(),
 				FeatureFlags:        []string{},
 				UtcStartupTimestamp: startupTime.UTC().Unix(),
 				Metrics: []DetailedMetrics{

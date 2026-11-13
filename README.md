@@ -147,7 +147,7 @@ Expected startup log (JSON format):
 | `internal/telemetry/` | LAPI `/usage-metrics` payload builder, processed counter and push worker |
 | `internal/storage/` | bbolt persistence for the quota, cooldowns and retry queue, and an in-memory store for tests |
 | `security/` | `seccomp-bouncer.json`, the OCI seccomp profile (minimal syscall allowlist) |
-| `scripts/` | `validate-seccomp.sh`, a static check of the profile's required syscalls |
+| `scripts/` | `validate-seccomp.sh`, a static check of the profile's required syscalls, and `test-coverage.sh`, the 100% coverage gate |
 | `docs/` | Setup, configuration, design, troubleshooting and external references |
 | `.github/` | Workflows (CI, release, image scan, Scorecard, Socket, Docker Hub description), pinned CI tools and Socket CLI requirements, Dependabot, CODEOWNERS |
 | Repository root | `Dockerfile` (multi-stage, golang to distroless), `docker-compose.yml`, `.env.example`, `Makefile`, `.golangci.yml`, `socket.yml`, and the `COMPLIANCE`, `CONTRIBUTING`, `DOCKERHUB` and `SECURITY` documents |
@@ -223,6 +223,7 @@ These decisions are intentionally never reported:
 - **Malformed IP values** - Anything other than a bare address or a `/32` / `/128` prefix, including wider networks and zoned IPv6 addresses (skip reason `invalid_ip`)
 - **Whitelisted IPs** - Addresses matching `IP_WHITELIST`, when it is set (skip reason `whitelist`)
 - **Short decisions** - Bans shorter than `ABUSEIPDB_MIN_DURATION`, when it is set (skip reason `min_duration`)
+- **AbuseIPDB-whitelisted IPs** - With `ABUSEIPDB_PRECHECK` on, addresses AbuseIPDB lists as whitelisted (skip reason `abuseipdb_whitelisted`)
 - **IPs within the cooldown window** - Already reported within `COOLDOWN_DURATION` (default 15 minutes)
 - **Decisions exceeding the daily quota** - Once the limit is reached, no further reports are sent that UTC day
 
@@ -337,6 +338,12 @@ go test -race ./... -count=1 -timeout=120s
 **`POLL_INTERVAL` now defaults to `10s`.** The built-in default changes from `2s` to `10s`, matching CrowdSec's recommended pull period and cutting default LAPI request traffic by 80%. The configurable minimum remains `2s`. Reporting latency follows the interval: a decision can now reach AbuseIPDB up to 10 s after CrowdSec issues it, instead of 2 s.
 
 Deployments that never set `POLL_INTERVAL` and run the binary directly (systemd, Windows, bare Docker without the bundled compose file) move from 2-second to 10-second polling. The bundled `docker-compose.yml` is unaffected — it sets `POLL_INTERVAL=30s` when the variable is unset. To keep the previous behaviour, set `POLL_INTERVAL=2s` explicitly.
+
+### Upgrading to v2.5.5
+
+**Precheck skips are no longer counted as reports.** With `ABUSEIPDB_PRECHECK=true`, an IP that AbuseIPDB lists as whitelisted is now counted under `filter="abuseipdb_whitelisted"` in `cs_abuseipdb_decisions_skipped_total` and logged as `skipped: whitelisted by AbuseIPDB`. Earlier versions logged it as `reported`, incremented `cs_abuseipdb_reports_sent_total`, updated the last-success timestamp and included it in the usage metrics sent to the LAPI. Dashboards that enumerate `filter` label values should include the new one.
+
+**Usage metrics report the host OS.** The `os` block sent to `POST /v1/usage-metrics` now carries the os-release `ID` and `VERSION_ID` (for example `debian` and `12` in the image), as CrowdSec's own components do, instead of the Go OS name and CPU architecture.
 
 Dashboards that assumed per-poll latencies (e.g. alerting on `cs_abuseipdb_last_lapi_pull_timestamp_seconds` staleness) are also unaffected: `/healthz` marks upstream stale after `max(5 × POLL_INTERVAL, 2m)`, which was already 2 minutes and does not change.
 

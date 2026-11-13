@@ -59,9 +59,10 @@ $p
 # ------------------------------------------------------------------------------
 # 5. DEVELOPER-ONLY SCRIPTS
 # ------------------------------------------------------------------------------
-# Ignore all of scripts/ except validate-seccomp.sh (required by ci.yml)
-/scripts/
-!scripts/validate-seccomp.sh
+# Ignore local scripts except the ones CI runs
+/scripts/*
+!/scripts/validate-seccomp.sh
+!/scripts/test-coverage.sh
 
 # ------------------------------------------------------------------------------
 # 6. IDE & AI TOOLS

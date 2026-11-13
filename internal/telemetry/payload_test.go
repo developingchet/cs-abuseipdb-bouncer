@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"encoding/json"
-	"runtime"
 	"testing"
 	"time"
 
@@ -22,8 +21,7 @@ func TestBuildMetricsPayloadAt(t *testing.T) {
 	c := payload.RemediationComponents[0]
 	assert.Equal(t, "cs-abuseipdb-bouncer", c.Type)
 	assert.Equal(t, "v2.2.0", c.Version)
-	assert.Equal(t, runtime.GOOS, c.OS.Name)
-	assert.Equal(t, runtime.GOARCH, c.OS.Version)
+	assert.Equal(t, hostOS(), c.OS)
 	assert.Equal(t, []string{}, c.FeatureFlags)
 	assert.Equal(t, startup.Unix(), c.UtcStartupTimestamp)
 	require.Len(t, c.Metrics, 1)

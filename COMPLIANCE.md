@@ -31,7 +31,7 @@ High-level structure:
 - Component metadata:
   - `type` = `cs-abuseipdb-bouncer`
   - `version`
-  - `os` (`name` is the Go `GOOS`; `version` carries `GOARCH`, for example `amd64`)
+  - `os` (`name` and `version` are the os-release `ID` and `VERSION_ID`, for example `debian` and `12`; without os-release, the Go OS name and `unknown`)
   - `feature_flags` (empty array)
   - `utc_startup_timestamp`
 - `metrics[]` array; each entry contains:
