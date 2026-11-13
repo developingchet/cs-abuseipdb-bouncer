@@ -415,7 +415,7 @@ docker compose up -d --force-recreate abuseipdb-bouncer
 
 ## Supply-Chain Verification
 
-Every release is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) using keyless OIDC (no stored private key). Verify the image signature:
+Every release is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) using keyless OIDC (no stored private key). Use Cosign 3 or later; Cosign 2 cannot read these signatures. Verify the image signature:
 
 ```bash
 cosign verify developingchet/cs-abuseipdb-bouncer:latest \
