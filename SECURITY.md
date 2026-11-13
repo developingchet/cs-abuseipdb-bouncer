@@ -64,7 +64,7 @@ The Docker image runs with:
 
 - Every release tag triggers a GitHub Actions workflow that builds the image, runs Trivy (blocks on HIGH/CRITICAL CVEs), signs the image with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC — no stored private key), and generates a CycloneDX SBOM
 - The SBOM is attached to the GitHub Release and embedded as a Cosign attestation on the Docker image
-- Verify a release image:
+- Verify a release image with Cosign 3 or later (Cosign 2 cannot read these signatures):
 
 ```bash
 cosign verify developingchet/cs-abuseipdb-bouncer:<tag> \

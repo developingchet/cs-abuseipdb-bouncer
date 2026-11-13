@@ -434,7 +434,7 @@ permissions:
   id-token: write  # required for OIDC token issuance
 ```
 
-Verification:
+Verification needs Cosign 3 or later, whose signature format Cosign 2 cannot read:
 
 ```bash
 cosign verify developingchet/cs-abuseipdb-bouncer:<tag> \

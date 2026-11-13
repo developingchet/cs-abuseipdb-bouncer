@@ -170,7 +170,7 @@ API keys and Bearer tokens are automatically redacted from all log output before
 
 ### Supply-Chain Verification
 
-Verify the image signature with Cosign:
+Verify the image signature with Cosign 3 or later (Cosign 2 cannot read these signatures):
 
 ```bash
 cosign verify developingchet/cs-abuseipdb-bouncer:latest \
