@@ -107,10 +107,10 @@ Once the limit is reached, all subsequent decisions are dropped with a `quota` s
 **Default:** `false`
 **Options:** `true`/`false`, `1`/`0`, `t`/`f` (also `TRUE`/`True`, `FALSE`/`False`, `T`, `F`); `yes`/`no` are rejected
 
-When `true`, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped.
+When `true`, each IP is queried via `/check` before calling `/report`. If AbuseIPDB marks the IP as `isWhitelisted: true`, the report is skipped. The worker has already charged the local daily quota and set the cooldown by then, so only AbuseIPDB's own report quota is saved.
 
 **Trade-offs:**
-- Prevents wasting report quota on whitelisted IPs (CDNs, search engines, trusted infrastructure)
+- Saves AbuseIPDB report quota on whitelisted IPs (CDNs, search engines, trusted infrastructure)
 - Each precheck consumes one call from the separate `/check` daily quota (1,000/day on the free tier, 3,000 Webmaster, 5,000 Supporter, 10,000 Basic, 50,000 Premium). If `/check` fails or is rate-limited, a warning is logged and the report proceeds without the precheck.
 - Adds approximately 100–300 ms latency per decision (one additional round trip)
 
@@ -222,6 +222,8 @@ They never open `state.db` (the running bouncer holds an exclusive bbolt lock on
 
 Set to an empty string (`METRICS_ADDR=`) to disable the HTTP server entirely (no port is opened). The `bouncer healthcheck` subcommand derives its probe URL from this value (`:9090` / `0.0.0.0:9090` → `http://127.0.0.1:9090/healthz`).
 
+With the bundled `docker-compose.yml`, an empty `METRICS_ADDR` in `.env` becomes `:9090` (Compose's `${METRICS_ADDR:-:9090}` substitutes empty values), so set `METRICS_ENABLED=false` there instead.
+
 **Security note:** The endpoints are unauthenticated. The bouncer logs a warning at startup when `METRICS_ADDR` is not a loopback address. In Docker, `:9090` listens on all interfaces inside the container; publish it only to `127.0.0.1` (as the bundled `docker-compose.yml` does) or a private network. For a native install bound to a non-loopback address, restrict the port with a firewall or put an authenticating reverse proxy in front of it.
 
 #### Usage Metrics Telemetry
@@ -244,7 +246,9 @@ Operational notes:
 **Type:** String (path)
 **Default:** _(none)_
 
-Optional path to a YAML configuration file. Values in the file are overridden by environment variables. Useful for managing configuration in version control without duplicating all env vars.
+Optional path to a YAML configuration file. Values in the file are overridden by environment variables, including empty ones. Useful for managing configuration in version control without duplicating all env vars.
+
+The bundled `docker-compose.yml` passes every setting as an environment variable, often empty, so a file value only takes effect for keys removed from its `environment` list.
 
 **Example `config.yaml`:**
 ```yaml
@@ -309,7 +313,7 @@ Output format for log messages.
 ```
 
 `text` produces human-readable output suitable for direct inspection:
-```
+```text
 12:15PM INF reported ip=203.0.113.42 sink=abuseipdb
 ```
 
@@ -348,7 +352,7 @@ These settings control the worker pool introduced in v2.0. All have sensible def
 **Default:** `4`
 **Range:** 1–64
 
-Number of goroutines that concurrently send reports to AbuseIPDB. Each worker handles one report independently (up to about 60 s: three 15 s attempts with 5 s and 10 s backoffs between them, plus up to 10 s for the `/check` call when `ABUSEIPDB_PRECHECK` is enabled), so multiple ban decisions are dispatched in parallel rather than sequentially.
+Number of goroutines that concurrently send reports to AbuseIPDB. Each worker handles one report independently (up to about 60 s: three 15 s attempts with 5 s and 10 s backoffs between them; about 70 s with the 10 s `/check` call of `ABUSEIPDB_PRECHECK`), so multiple ban decisions are dispatched in parallel rather than sequentially.
 
 Increasing this value helps during high-frequency ban waves (e.g. a DDoS generating hundreds of decisions per minute). For most deployments, the default of 4 is sufficient — AbuseIPDB API latency, not throughput, is the limiting factor.
 
@@ -358,7 +362,7 @@ Increasing this value helps during high-frequency ban waves (e.g. a DDoS generat
 **Default:** `256`
 **Range:** 1–10000
 
-Size of the in-memory job queue between the event loop and the worker pool. If new decisions arrive faster than workers can dispatch them, the queue absorbs the burst. When the queue is full, excess decisions are dropped immediately and counted in the `cs_abuseipdb_decisions_skipped_total{filter="buffer_full"}` metric.
+Size of the in-memory job queue between the event loop and the worker pool. If new decisions arrive faster than workers can dispatch them, the queue absorbs the burst. When the queue is full, excess decisions are dropped immediately and counted in the `cs_abuseipdb_decisions_skipped_total{filter="buffer_full"}` metric. A due retry that finds the queue full is counted under both `buffer_full` and `retry_buffer_full`.
 
 Increase this value if you observe frequent `buffer_full` drops during burst traffic and cannot increase `WORKER_COUNT` further (e.g. due to AbuseIPDB rate limits).
 
@@ -386,11 +390,11 @@ How often the background retry worker checks the persistent retry queue (in `sta
 
 | Outcome | Retry delay |
 |---------|-------------|
-| HTTP 429 rate limit | `Retry-After` header (seconds); otherwise until `X-RateLimit-Reset`; otherwise 60 s (capped at 24 h) |
-| Network error, timeout, 5xx after the client's 3 in-line attempts, 401 | 1 m, doubling per attempt, capped at 30 m |
+| HTTP 429 rate limit | `Retry-After` header (seconds); otherwise until `X-RateLimit-Reset`; otherwise an "in N seconds" hint in the response body; otherwise 60 s (at least 1 s, capped at 24 h) |
+| Network error, timeout, 5xx or any other unexpected status after the client's 3 in-line attempts; 401 | 1 m, doubling per attempt, capped at 30 m |
 | Interrupted by shutdown | 10 s after the next start |
 
-Each decision is attempted at most 6 times in total, then dropped (`cs_abuseipdb_decisions_skipped_total{filter="retry_exhausted"}`). Duplicate-report 429s and 422 validation errors are never retried. Retries do not consume the local daily quota or cooldown again — those were charged on the first attempt.
+Each decision is attempted at most 6 times in total, then dropped (`cs_abuseipdb_decisions_skipped_total{filter="retry_exhausted"}`). Duplicate-report 429s and 422 validation errors are never retried. Retries do not consume the local daily quota or cooldown again — those were charged on the first attempt. Each check resubmits at most 50 due entries, and the janitor deletes entries that became due more than 24 hours ago.
 
 Values below 10 s are rejected at startup. The default of 30 s is appropriate for all deployments.
 
@@ -590,7 +594,7 @@ scrape_configs:
 
 **Splunk:**
 
-```
+```ini
 [monitor:///var/lib/docker/containers/*abuseipdb-bouncer*.log]
 disabled = false
 index = security

@@ -8,14 +8,14 @@ A production-ready, security-hardened CrowdSec bouncer that reports malicious IP
 
 | Feature | Detail |
 |---------|--------|
-| **Concurrent Worker Pool** | A configurable pool of goroutines sends reports to AbuseIPDB in parallel. High-frequency ban waves no longer stall the main event loop. Backpressure is handled via a bounded channel; overflow is counted in the `buffer_full` filter metric. Failed reports (network errors, 5xx, 429) are persisted and retried, honouring AbuseIPDB's `Retry-After` header. |
+| **Concurrent Worker Pool** | A configurable pool of goroutines sends reports to AbuseIPDB in parallel. High-frequency ban waves no longer stall the main event loop. Backpressure is handled via a bounded channel; overflow is counted in the `buffer_full` filter metric. Failed reports (network errors, 5xx and other unexpected statuses, 401, 429) are persisted and retried, honouring AbuseIPDB's `Retry-After` header. |
 | **ACID State** | Per-IP cooldown and daily quota are stored in a [bbolt](https://github.com/etcd-io/bbolt) embedded database (`state.db`). Quota and cooldown checks execute as single atomic transactions — no TOCTOU races, crash-consistent, survives container restarts. |
 | **Prometheus Metrics** | Eleven metrics are exported on `GET /metrics` (port 9090 by default): decisions processed, reports sent, decisions skipped (by filter), API errors (by type), daily quota remaining, `state.db` file size, retry-queue size / enqueues / attempts, and last-successful LAPI pull / AbuseIPDB report timestamps. Ready for Grafana / Alertmanager. |
 | **Honest Health Checks** | `/healthz` and `/readyz` reflect the last successful LAPI pull and AbuseIPDB call. The Docker `HEALTHCHECK` queries them over HTTP — it never touches `state.db` and never spends API quota. |
 | **Distroless Security** | The runtime image is `gcr.io/distroless/static-debian12:nonroot`. No shell, no package manager, no libc. Runs as UID 65532 with zero Linux capabilities and a read-only filesystem. Seccomp syscall allowlist applied by default in the provided `docker-compose.yml`. |
 | **Supply-Chain Provenance** | Every release is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) (keyless OIDC — no stored private key) and accompanied by a CycloneDX SBOM attached as a Cosign attestation and a GitHub Release asset. |
-| **Multi-Architecture** | Pre-built images for `linux/amd64` and `linux/arm64` on Docker Hub and GitHub Container Registry (`ghcr.io/developingchet/cs-abuseipdb-bouncer`). Static Go binary — no libc, no CGO. |
-| **Zero-Touch Releases** | Every version tag triggers a GitHub Actions pipeline: tests (with `-race`) → Trivy CVE scan (blocks on HIGH/CRITICAL) → multi-arch Docker build → Docker Hub and GHCR push → Cosign sign + SBOM → GitHub Release with binaries and SHA-256 checksums. |
+| **Multi-Architecture** | Pre-built images for `linux/amd64` and `linux/arm64` on Docker Hub and GitHub Container Registry (`ghcr.io/developingchet/cs-abuseipdb-bouncer`). Static Go binary — no libc, no CGO. Each release is tagged `vX.Y.Z` and `X.Y.Z`; stable releases also move `X.Y`, `X` and `latest`. |
+| **Zero-Touch Releases** | Every version tag triggers a GitHub Actions pipeline: tests (with `-race`) and govulncheck → Trivy scan of the amd64 build (blocks on fixable HIGH/CRITICAL CVEs) → multi-arch Docker build → Docker Hub and GHCR push → Cosign sign + SBOM → GitHub Release with binaries and Cosign-signed SHA-256 checksums. A weekly scan covers both published architectures. |
 
 ---
 
@@ -76,8 +76,8 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `METRICS_ADDR` | `:9090` | Address for `/metrics`, `/healthz`, `/readyz`. The image sets `:9090`; the binary on its own defaults to `127.0.0.1:9090`. A warning is logged at startup when the address is not loopback, since the endpoints are unauthenticated — publish the port only to `127.0.0.1` or a private network. Ignored when `METRICS_ENABLED=false`. Set to empty string to disable. |
 | `CONFIG_FILE` | _(none)_ | Optional path to a YAML config file (alternative / supplement to env vars). |
 | `ABUSEIPDB_DAILY_LIMIT` | `1000` | Daily report quota (free=1000, webmaster=3000, premium=50000). |
-| `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs). Uses one call from the separate `/check` daily quota per decision. |
-| `ABUSEIPDB_MIN_DURATION` | `0` | Skip decisions shorter than N seconds (e.g. `300` ignores 5-minute test bans). |
+| `ABUSEIPDB_PRECHECK` | `false` | Pre-check each IP with `/check` before reporting (skips whitelisted IPs; the local daily quota and cooldown are still charged). Uses one call from the separate `/check` daily quota per decision. |
+| `ABUSEIPDB_MIN_DURATION` | `0` | Skip shorter decisions: whole seconds or a duration (`300` or `5m` ignores 5-minute test bans). |
 | `IP_WHITELIST` | _(none)_ | Comma-separated IPs/CIDRs to skip reporting (e.g. `203.0.113.0/24,2001:db8::/32`). |
 | `COOLDOWN_DURATION` | `15m` | Per-IP cooldown matching AbuseIPDB's deduplication window. |
 | `POLL_INTERVAL` | `10s` | LAPI decision stream polling frequency (minimum: 2s). The bundled docker-compose.yml sets `30s` when unset. |
@@ -87,7 +87,7 @@ Get your LAPI key: `docker exec crowdsec cscli bouncers add abuseipdb-bouncer`
 | `TLS_SKIP_VERIFY` | `false` | Skip TLS verification — only for self-signed LAPI certificates. |
 | `WORKER_COUNT` | `4` | Number of goroutines that concurrently send reports to AbuseIPDB (range: 1–64). |
 | `WORKER_BUFFER` | `256` | Size of the in-memory job queue between the event loop and workers (range: 1–10000). |
-| `JANITOR_INTERVAL` | `5m` | How often the background janitor prunes expired cooldown entries and updates the DB size metric (minimum: 30s). |
+| `JANITOR_INTERVAL` | `5m` | How often the background janitor prunes expired cooldown and stale retry entries and refreshes the DB size, retry-queue and quota gauges (minimum: 30s). |
 | `RETRY_CHECK_INTERVAL` | `30s` | How often to check the retry queue for failed / rate-limited decisions ready to resend (minimum: 10s). |
 | `USAGE_METRICS_ENABLED` | `true` | Enable/disable periodic LAPI telemetry push (`POST /v1/usage-metrics`). |
 | `USAGE_METRICS_INTERVAL` | `30m` | Interval for LAPI telemetry push (minimum: 10m). |
@@ -135,7 +135,7 @@ The container image is built `FROM gcr.io/distroless/static-debian12:nonroot`. T
 
 - **No shell** — eliminates RCE via shell injection
 - **No package manager** — no `apt`, `apk`, or `pip` to install tools post-compromise
-- **Minimal CVE surface** — only the Go binary and CA certificates
+- **Minimal CVE surface** — only the Go binary, CA certificates and time zone data
 
 ### Seccomp Profile
 

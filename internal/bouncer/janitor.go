@@ -12,8 +12,9 @@ import (
 )
 
 // runJanitor runs periodic background maintenance tasks:
-//   - Prune expired cooldown entries from the store.
-//   - Update the BboltDBSizeBytes Prometheus gauge (for on-disk stores).
+//   - Prune expired cooldown entries, and retry entries due more than 24h ago.
+//   - Update the BboltDBSizeBytes gauge (for on-disk stores) and the
+//     RetryQueueSize and QuotaRemaining gauges.
 //
 // It returns when ctx is cancelled.
 func runJanitor(ctx context.Context, store storage.Store, interval time.Duration) {

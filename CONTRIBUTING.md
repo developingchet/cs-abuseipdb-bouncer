@@ -67,7 +67,7 @@ Small documentation fixes can be submitted directly as pull requests. For larger
 
 ### Prerequisites
 
-- Go 1.27 or higher (`go version`)
+- Go 1.27.4 or higher, the version in `go.mod` (`go version`)
 - Docker 20.10+ and Docker Compose v2+
 - Git
 
@@ -204,7 +204,7 @@ When adding new scenario mappings to `internal/sink/abuseipdb/mapper.go`:
 ### Docker and Compose Standards
 
 **Dockerfile**
-- Builder stage: `golang:1.27-alpine`
+- Builder stage: `golang:1.27.4-alpine`, pinned by digest (Dependabot bumps it)
 - Runtime stage: `gcr.io/distroless/static-debian12:nonroot`
 - Build flags: `CGO_ENABLED=0 -ldflags="-s -w" -trimpath`
 - Do not add runtime dependencies (curl, wget, jq, etc.)
@@ -286,6 +286,8 @@ Before submitting, verify:
 - [ ] `go test ./...` passes
 - [ ] `go test -race ./...` passes (no data races)
 - [ ] `go vet ./...` reports no issues
+- [ ] `go mod verify` passes
+- [ ] `go run -modfile=.github/tools/go.mod golang.org/x/vuln/cmd/govulncheck ./...` reports no vulnerabilities
 - [ ] `golangci-lint run ./...` reports no issues (CI blocks on lint failures)
 - [ ] `go test -cover ./cmd/... ./internal/...` shows 100% statement coverage for every package (CI fails any package below 100%)
 - [ ] Documentation updated if applicable

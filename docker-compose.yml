@@ -80,12 +80,14 @@ services:
       # Metrics / health probes server. The image's HEALTHCHECK needs it enabled.
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
 
-      # Metrics / health probes address (set to empty string to disable).
+      # Metrics / health probes address. An empty value falls back to :9090;
+      # set METRICS_ENABLED=false to turn the server off.
       # Listens on all container interfaces so the published port below can
       # reach it; the port is published on the host's loopback only.
       - METRICS_ADDR=${METRICS_ADDR:-:9090}
 
-      # Optional path to a YAML config file (alternative to environment vars).
+      # Optional path to a YAML config file. The environment entries above
+      # override it, even when empty, so remove a key above to set it in the file.
       # - CONFIG_FILE=/etc/cs-abuseipdb/config.yaml
 
     volumes:

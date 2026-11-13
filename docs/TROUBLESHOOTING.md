@@ -88,7 +88,7 @@ docker compose up -d
 
 **Symptom:** Container crash-loops immediately and logs show one of:
 
-```
+```text
 error closing exec fds: readdirent fsmount:fscontext:proc/thread-self/fd/: operation not permitted
 OCI runtime start failed [...] reopen exec fifo [...] operation not permitted
 ```
@@ -153,9 +153,9 @@ Look for `"message":"decision filtered (pre-queue)"` and `"decision filtered (co
 
 | filter | Cause | Fix |
 |--------|-------|-----|
-| `action` | Decision has action=del (delete event) | Normal -- delete events are not reported |
+| `action` | Decision action is not `add` | Defensive check -- deleted decisions never reach the filters |
 | `scenario_exclude` | impossible-travel scenario | Expected -- these detect account compromise, not IP abuse |
-| `origin` | CAPI or lists origin | Expected -- community blocklist IPs are not re-reported |
+| `origin` | Origin other than `crowdsec` or `cscli` (CAPI, lists, `cscli-import`, console…) | Expected -- only local detections and manual bans are reported |
 | `scope` | Range, ASN, or country scope | AbuseIPDB only accepts single IPs |
 | `value` | Empty IP value | Indicates a malformed decision in CrowdSec |
 | `invalid_ip` | Value is not a single IP address (malformed, a network wider than /32 or /128, or a zoned IPv6 address) | Indicates a malformed decision in CrowdSec; nothing is reported and no quota is used |
@@ -168,7 +168,7 @@ Look for `"message":"decision filtered (pre-queue)"` and `"decision filtered (co
 | `rejected` | AbuseIPDB returned 422 (invalid parameters) | Check the `detail` in the error log line |
 | `retry_exhausted` | Report failed 6 times in a row | Check AbuseIPDB reachability / API key |
 | `buffer_full` | Worker queue full during a burst | Increase `WORKER_BUFFER` or `WORKER_COUNT` |
-| `retry_buffer_full` | Worker queue full when the retry worker resubmitted a due decision; the decision is lost | Increase `WORKER_BUFFER` or `WORKER_COUNT` |
+| `retry_buffer_full` | Worker queue full when the retry worker resubmitted a due decision; the decision is lost (also counted under `buffer_full`) | Increase `WORKER_BUFFER` or `WORKER_COUNT` |
 | `retry_enqueue_failed` | A failed or rate-limited report could not be written to the retry queue in `state.db`; the decision is lost | Check the error log line (`failed to enqueue retry -- decision lost`) and the `/data` volume |
 
 ### Decisions are within the cooldown window
@@ -188,7 +188,7 @@ If an IP is being repeatedly detected, the first detection is reported and subse
 {"level":"error","error":"unauthorized: upstream rejected the API key (401)","sink":"abuseipdb","ip":"203.0.113.42","message":"report failed"}
 ```
 
-After 5 consecutive failures `/healthz` reports unhealthy. Affected decisions are kept in the retry queue (up to 6 attempts with backoff), so reports resume once the key is fixed and the container restarted.
+After 5 consecutive failures `/healthz` reports unhealthy. Affected decisions are kept in the retry queue (up to 6 attempts with backoff), so reports resume once the key is fixed and the container restarted. The sixth attempt is the last (about half an hour of backoff); after that the decision is dropped as `retry_exhausted`.
 
 **Cause:** The `ABUSEIPDB_API_KEY` value is invalid or the key has been revoked.
 
@@ -325,7 +325,7 @@ docker inspect --format '{{json .State.Health}}' abuseipdb-bouncer | jq '.Log[-1
 | Output contains | Meaning |
 |-----------------|---------|
 | `no successful LAPI pull since startup` / `last successful LAPI pull was` | LAPI unreachable or key rejected — see above |
-| `last 5 AbuseIPDB calls failed` | Network/TLS problem reaching api.abuseipdb.com, AbuseIPDB 5xx, or invalid API key (401) |
+| `last N AbuseIPDB calls failed` (N ≥ 5) | Network/TLS problem reaching api.abuseipdb.com, AbuseIPDB 5xx or another unexpected status, or an invalid API key (401) |
 | `healthcheck needs the metrics/health server` | `METRICS_ENABLED=false` or `METRICS_ADDR` empty — re-enable it or disable the container healthcheck |
 | `connection refused` | The HTTP server could not bind `METRICS_ADDR` (check logs for `metrics server error`) |
 | `storage: open /data/state.db: timeout` | You are running an image older than v2.4.0, whose healthcheck opened the locked database. Upgrade. |

@@ -22,7 +22,7 @@ Complete installation procedures for the CrowdSec AbuseIPDB Bouncer.
 
 ### CrowdSec Requirements
 
-- **CrowdSec** - Version 1.4.0 or higher
+- **CrowdSec** - Version 1.4.0 or higher. The usage-metrics push (`POST /v1/usage-metrics`) needs a LAPI that supports remediation component metrics; on older versions set `USAGE_METRICS_ENABLED=false` to avoid a warning every interval
 - **LAPI Access** - Network access to the Local API (default port 8080 or 8443 if TLS-enabled)
 - **Admin Privileges** - Ability to run `cscli bouncers add`
 
@@ -65,7 +65,7 @@ docker exec crowdsec cscli bouncers add abuseipdb-bouncer
 
 Output:
 
-```
+```text
 Api key for 'abuseipdb-bouncer':
 
    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -172,9 +172,9 @@ This step downloads Go module dependencies and compiles the binary inside the co
 
 Expected output:
 
-```
+```text
 [+] Building X.Xs (8/8) FINISHED
- => [builder 1/5] FROM docker.io/library/golang:1.27-alpine
+ => [builder 1/8] FROM docker.io/library/golang:1.27.4-alpine@sha256:...
  => [builder 4/5] RUN go mod download
  => [builder 5/5] RUN CGO_ENABLED=0 ... go build -o /bouncer ./cmd/bouncer/
  => [stage-1 1/4] FROM gcr.io/distroless/static-debian12:nonroot
@@ -197,7 +197,7 @@ docker compose up -d
 
 Expected output:
 
-```
+```text
 [+] Running 1/1
  ✔ Container abuseipdb-bouncer  Started
 ```
@@ -236,7 +236,7 @@ Expected: `abuseipdb-bouncer` row shows a recent `last_pull` timestamp.
 
 ```bash
 # Create a test decision (203.0.113.42 is the TEST-NET-3 documentation range)
-docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test report"
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test"
 
 # Watch logs
 docker logs -f abuseipdb-bouncer
