@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a new capability, setting or scenario mapping.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: For a scenario mapping, give the scenario name and the AbuseIPDB categories it should map to.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: impact
+    attributes:
+      label: Effect on reports
+      description: Whether the change alters what is sent to AbuseIPDB, how often, or how much daily quota it uses.

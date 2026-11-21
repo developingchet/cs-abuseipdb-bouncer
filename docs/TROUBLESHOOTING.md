@@ -135,7 +135,7 @@ docker exec crowdsec cscli decisions list
 If no decisions are listed, the bouncer has nothing to report. Add a test decision:
 
 ```bash
-docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test"
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -R "test"
 docker logs -f abuseipdb-bouncer
 ```
 
@@ -363,7 +363,7 @@ Debug mode logs every decision (received and filtered). Look for decisions that 
 **4. Inject a test decision:**
 
 ```bash
-docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "debug test"
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -R "debug test"
 # Watch for the decision to appear in logs within 30 seconds
 docker logs -f abuseipdb-bouncer | grep 203.0.113.42
 ```
@@ -393,10 +393,4 @@ The `last_pull` column should show a recent timestamp (updated every poll interv
 
 ---
 
-If the problem persists after following these steps, open an issue at https://github.com/developingchet/cs-abuseipdb-bouncer/issues and include:
-
-- Output of `docker logs abuseipdb-bouncer` (sanitize API keys and IPs)
-- Output of `docker inspect abuseipdb-bouncer` (sanitize API keys)
-- Output of `docker exec crowdsec cscli bouncers list`
-- Your Docker and Docker Compose versions
-- A description of the expected vs. actual behavior
+If the problem persists after following these steps, open the [bug report form](https://github.com/developingchet/cs-abuseipdb-bouncer/issues/new?template=bug_report.yml). It asks for the bouncer and CrowdSec versions, the installation method, your platform, the settings you changed (with API keys removed; full `docker inspect` output contains both keys) and the bouncer logs. The output of `docker exec crowdsec cscli bouncers list` also helps for connection problems.

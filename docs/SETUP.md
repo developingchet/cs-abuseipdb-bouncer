@@ -236,7 +236,7 @@ Expected: `abuseipdb-bouncer` row shows a recent `last_pull` timestamp.
 
 ```bash
 # Create a test decision (203.0.113.42 is the TEST-NET-3 documentation range)
-docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test"
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -R "test"
 
 # Watch logs
 docker logs -f abuseipdb-bouncer
@@ -376,7 +376,7 @@ No `extra_hosts` entry is needed.
 
 ### Example 5: Kubernetes Deployment
 
-Kubernetes support is not included in this repository. If you need a Helm chart or Kubernetes manifests, open a discussion at https://github.com/developingchet/cs-abuseipdb-bouncer/discussions -- community contributions are welcome.
+Kubernetes support is not included in this repository. If you need a Helm chart or Kubernetes manifests, open a feature request at https://github.com/developingchet/cs-abuseipdb-bouncer/issues/new?template=feature_request.yml -- community contributions are welcome.
 
 ---
 

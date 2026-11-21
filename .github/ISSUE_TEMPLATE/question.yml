@@ -1,0 +1,19 @@
+name: Question
+description: Ask how to set up, configure or contribute to the bouncer.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove API keys and replace public IP addresses with documentation addresses (`203.0.113.0/24`, `2001:db8::/32`) before pasting settings or logs.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Bouncer version, installation method, and what you have tried or read so far.
