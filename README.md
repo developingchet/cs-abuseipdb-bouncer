@@ -14,7 +14,7 @@ A production-ready, security-hardened CrowdSec bouncer that automatically report
 
 ## Overview
 
-This bouncer connects directly to the CrowdSec Local API and reports new ban decisions to AbuseIPDB's threat intelligence database. It is implemented as a single static Go binary running in a distroless container with no shell, no root privileges, and a read-only filesystem.
+This bouncer connects directly to the CrowdSec Local API and reports new decisions to AbuseIPDB's threat intelligence database. It is implemented as a single static Go binary running in a distroless container with no shell, no root privileges, and a read-only filesystem.
 
 **Key capabilities:**
 
@@ -28,7 +28,7 @@ This bouncer connects directly to the CrowdSec Local API and reports new ban dec
 - Health endpoints (`/healthz`, `/readyz`) driven by the last successful LAPI pull and AbuseIPDB call — probes never touch `state.db` and never spend API quota
 - State persists across container restarts via named Docker volume
 - Structured JSON logging compatible with Loki, Splunk, and other SIEM tools
-- Zero PII in reports -- only scenario names are transmitted
+- Minimal reports -- each one carries only the IP address, its categories and a scenario comment (see [Data Sent to AbuseIPDB](#data-sent-to-abuseipdb))
 
 **Security properties:**
 
@@ -141,7 +141,7 @@ Expected startup log (JSON format):
 | `internal/config/` | Environment-based configuration and validation |
 | `internal/decision/` | Filter pipeline and private/reserved IP detection |
 | `internal/logger/` | Logging: the bridge for go-cs-bouncer's logrus output, and redaction of API keys and Bearer tokens |
-| `internal/sink/` | Sink interface and typed errors (duplicate, rate limit, permanent, unauthorized) |
+| `internal/sink/` | Sink interface and typed errors (duplicate, whitelisted, rate limit, permanent, unauthorized) |
 | `internal/sink/abuseipdb/` | AbuseIPDB HTTP client, category IDs and scenario-to-category mapping |
 | `internal/metrics/` | Prometheus metric definitions |
 | `internal/telemetry/` | LAPI `/usage-metrics` payload builder, processed counter and push worker |
@@ -149,8 +149,8 @@ Expected startup log (JSON format):
 | `security/` | `seccomp-bouncer.json`, the OCI seccomp profile (minimal syscall allowlist) |
 | `scripts/` | `validate-seccomp.sh`, a static check of the profile's required syscalls, and `test-coverage.sh`, the 100% coverage gate |
 | `docs/` | Setup, configuration, design, troubleshooting and external references |
-| `.github/` | Workflows (CI, release, image scan, Scorecard, Socket, Docker Hub description), pinned CI tools and Socket CLI requirements, Dependabot, CODEOWNERS |
-| Repository root | `Dockerfile` (multi-stage, golang to distroless), `docker-compose.yml`, `.env.example`, `Makefile`, `.golangci.yml`, `socket.yml`, and the `COMPLIANCE`, `CONTRIBUTING`, `DOCKERHUB` and `SECURITY` documents |
+| `.github/` | Workflows (CI, release, image scan, Scorecard, Socket, Docker Hub description), pinned CI tools and Socket CLI requirements, Dependabot, CODEOWNERS, issue forms and the pull request template |
+| Repository root | `Dockerfile` (multi-stage, golang to distroless), `docker-compose.yml`, `.env.example`, `Makefile`, `.golangci.yml`, `socket.yml`, the `COMPLIANCE`, `CONTRIBUTING`, `DOCKERHUB` and `SECURITY` documents, and `AGENTS.md` (instructions for coding agents) |
 
 ## Configuration Summary
 
@@ -226,6 +226,24 @@ These decisions are intentionally never reported:
 - **AbuseIPDB-whitelisted IPs** - With `ABUSEIPDB_PRECHECK` on, addresses AbuseIPDB lists as whitelisted (skip reason `abuseipdb_whitelisted`)
 - **IPs within the cooldown window** - Already reported within `COOLDOWN_DURATION` (default 15 minutes)
 - **Decisions exceeding the daily quota** - Once the limit is reached, no further reports are sent that UTC day
+
+## Data Sent to AbuseIPDB
+
+Each report is a `POST /api/v2/report`, authenticated with your API key in the `Key` header, carrying three form fields and no other decision fields or log content:
+
+| Field | Example | Source |
+|---|---|---|
+| `ip` | `203.0.113.42` | The decision's IP address |
+| `categories` | `22,18` | Mapped from the scenario (see [Scenario Mapping](#scenario-mapping)) |
+| `comment` | `CrowdSec detection \| scenario: ssh-bf` | The decision's scenario, without the author prefix up to the last `/` |
+
+Every decision type that passes the filters is reported, not only bans; captcha and throttle decisions are reported the same way.
+
+Manual decisions from `cscli decisions add` are reported too, and their scenario is whatever the operator passed with `-R`/`--reason`. Without a reason, cscli records `manual '<type>' from '<machine login>'`, so the comment then contains the LAPI machine login: by default `localhost` in the official CrowdSec container (set by its `CUSTOM_HOSTNAME` variable), otherwise the name the machine was registered under or a generated ID that can embed the host's machine ID. Pass a neutral `--reason` on manual bans if that login should not be published.
+
+With `ABUSEIPDB_PRECHECK=true`, the IP address is also sent to `GET /api/v2/check` before the report.
+
+AbuseIPDB shows every report, comment included, on the reported address's public page, attributed to the reporting account. An IP address can be personal data, for example under the GDPR, so each report discloses it to AbuseIPDB and to anyone who looks the address up. Check that this fits your obligations before you enable the bouncer. The ranges listed in [Private IP Exclusion](docs/DESIGN.md#private-ip-exclusion) are never reported, and `IP_WHITELIST` keeps further addresses out of reports.
 
 ## State Persistence
 
@@ -382,9 +400,9 @@ MIT License. See [LICENSE](LICENSE) for full text.
 
 ## Support
 
-- **Issues:** https://github.com/developingchet/cs-abuseipdb-bouncer/issues
-- **Discussions:** https://github.com/developingchet/cs-abuseipdb-bouncer/discussions
-- **CrowdSec Discord:** https://discord.gg/crowdsec
+- **Bugs, feature requests and questions:** [open an issue](https://github.com/developingchet/cs-abuseipdb-bouncer/issues/new/choose) with the matching form
+- **Security vulnerabilities:** report them privately, as described in [SECURITY.md](SECURITY.md)
+- **CrowdSec questions:** [CrowdSec Discord](https://discord.gg/crowdsec)
 
 ## Acknowledgments
 

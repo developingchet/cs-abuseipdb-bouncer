@@ -31,14 +31,15 @@ Before reporting a bug:
 2. Verify you are using the latest version
 3. Enable debug logging to gather detailed output: `LOG_LEVEL=debug`
 
-When submitting a bug report, include:
+Open the report with the [bug report form](https://github.com/developingchet/cs-abuseipdb-bouncer/issues/new?template=bug_report.yml). It asks for:
 
-- Output of `docker logs abuseipdb-bouncer` (sanitize IPs and API keys)
-- Output of `docker inspect abuseipdb-bouncer` (sanitize keys)
-- CrowdSec version: `docker exec crowdsec cscli version`
-- Your Docker and Docker Compose versions
-- Steps to reproduce the issue
-- Expected vs. actual behavior
+- Bouncer version: `docker exec abuseipdb-bouncer /usr/local/bin/bouncer version`, the image tag, or the git tag or commit you built
+- Installation method (bundled Compose file, Docker run, Kubernetes, release binary or source build)
+- CrowdSec version: the `version:` line from `docker exec crowdsec cscli version`
+- Host OS and architecture, and your Docker and Docker Compose versions
+- What happened, what you expected, and steps to reproduce
+- The settings you changed from the defaults, with API keys removed (full `docker inspect` output contains both keys)
+- Output of `docker logs abuseipdb-bouncer` (replace public IPs and remove API keys)
 
 Security vulnerabilities should be reported privately through a GitHub Security Advisory, as described in [SECURITY.md](SECURITY.md), not as public issues.
 
@@ -122,7 +123,7 @@ Go is required for local development and running tests. Docker is used for build
 4. Commit with clear messages:
    ```bash
    git add internal/path/to/file.go
-   git commit -m "Add scenario mapping for CVE-2024-12345"
+   git commit -m "feat: map the CVE-2024-12345 scenario to categories 21 and 20"
    ```
 
 ## Coding Standards
@@ -246,7 +247,7 @@ docker logs abuseipdb-bouncer
 
 **Report test:**
 ```bash
-docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "test"
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -R "test"
 docker logs -f abuseipdb-bouncer | grep 203.0.113.42
 # Verify: "reported" log line appears
 docker exec crowdsec cscli decisions delete -i 203.0.113.42
@@ -268,7 +269,7 @@ docker logs -f abuseipdb-bouncer | grep 192.168.1.1
 
 2. **Test thoroughly** -- follow the testing requirements above
 
-3. **Create pull request**:
+3. **Create pull request** and fill in the pull request template:
    - Use a clear, descriptive title
    - Reference any related issues: "Fixes #123" or "Addresses #456"
    - Describe what changed and why
@@ -290,9 +291,10 @@ Before submitting, verify:
 - [ ] `go run -modfile=.github/tools/go.mod golang.org/x/vuln/cmd/govulncheck ./...` reports no vulnerabilities
 - [ ] `golangci-lint run ./...` reports no issues (CI blocks on lint failures)
 - [ ] `make coverage-check` (`scripts/test-coverage.sh`) passes: every package has 100% statement coverage, as CI requires
-- [ ] Documentation updated if applicable
+- [ ] `bash scripts/validate-seccomp.sh ./security/seccomp-bouncer.json` passes, for changes to the Dockerfile, `docker-compose.yml` or the seccomp profile
+- [ ] Documentation updated if applicable, including [Data Sent to AbuseIPDB](README.md#data-sent-to-abuseipdb) when the report payload changes, and `docker-compose.yml`, `.env.example`, `docs/CONFIGURATION.md`, the README Configuration Summary and `DOCKERHUB.md` for a new setting
 - [ ] No sensitive data (API keys, real IP addresses) in commits
-- [ ] Commit messages are clear and descriptive
+- [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `ci:`, `chore:`)
 
 ### Review Process
 
@@ -326,7 +328,7 @@ Add mappings for:
 
 If you need help contributing:
 
-- Open a discussion: https://github.com/developingchet/cs-abuseipdb-bouncer/discussions
+- Open an issue: https://github.com/developingchet/cs-abuseipdb-bouncer/issues/new/choose
 - Ask in CrowdSec Discord: https://discord.gg/crowdsec
 
 ## License

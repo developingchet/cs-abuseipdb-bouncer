@@ -1,0 +1,86 @@
+name: Bug report
+description: Report a bouncer problem. Security vulnerabilities go through a private advisory instead.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities must not be reported here; follow [SECURITY.md](https://github.com/developingchet/cs-abuseipdb-bouncer/blob/main/SECURITY.md) instead.
+
+        Before pasting logs or settings, remove API keys and replace public IP addresses with documentation addresses (`203.0.113.0/24`, `2001:db8::/32`).
+  - type: input
+    id: version
+    attributes:
+      label: Bouncer version
+      description: The output of `docker exec abuseipdb-bouncer /usr/local/bin/bouncer version`, the image tag, or the git tag or commit you built from.
+      placeholder: v2.5.5
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation
+      options:
+        - Docker Compose (bundled docker-compose.yml)
+        - Docker run or another Compose file
+        - Kubernetes
+        - Release binary (systemd, Windows or other)
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: crowdsec
+    attributes:
+      label: CrowdSec version
+      description: The `version:` line from `cscli version`.
+      placeholder: v1.8.2
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Host OS and architecture, and the Docker and Compose versions if you use them.
+      placeholder: Debian 12 amd64, Docker 28.1, Compose v2.35
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: For a decision-handling problem, include the `cscli decisions add` command or the scenario that produced the decision.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: The settings you changed from the defaults, from `.env` or `docker inspect`, with keys removed.
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Bouncer output around the problem, ideally with `LOG_LEVEL=debug`.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed API keys and replaced public IP addresses in everything above.
+          required: true
+        - label: The problem happens on the latest release.
+          required: false

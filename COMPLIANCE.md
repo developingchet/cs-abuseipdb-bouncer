@@ -60,7 +60,7 @@ Confirm `last_pull` updates.
 
 3. Verify decision ingestion to reporting path:
 ```bash
-docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -r "compliance test"
+docker exec crowdsec cscli decisions add -i 203.0.113.42 -t ban -d 1h -R "compliance test"
 docker logs -f abuseipdb-bouncer
 ```
 Expect `reporting` and `reported` log lines for the IP. The `decision received` line is logged at debug level only, so it appears only with `LOG_LEVEL=debug`.

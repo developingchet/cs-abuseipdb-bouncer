@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CrowdSec questions
+    url: https://discord.gg/crowdsec
+    about: Questions about CrowdSec itself, its scenarios or the LAPI.
+  - name: AbuseIPDB account or API questions
+    url: https://www.abuseipdb.com/contact
+    about: Account limits, API keys and published reports are handled by AbuseIPDB.

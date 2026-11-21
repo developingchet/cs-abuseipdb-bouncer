@@ -37,6 +37,8 @@ data/*
 !.env.example
 config.yaml
 config.yml
+# The issue template chooser configuration is not a secret
+!/.github/ISSUE_TEMPLATE/config.yml
 *.local
 *.local.yml
 *.local.md
@@ -81,6 +83,8 @@ $p
 .copilot/
 CLAUDE.md
 AGENTS.md
+# The root AGENTS.md is the public contributor guide; nested ones stay local
+!/AGENTS.md
 GEMINI.md
 WINDSURF.md
 .windsurfrules
