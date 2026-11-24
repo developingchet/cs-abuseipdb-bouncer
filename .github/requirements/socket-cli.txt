@@ -340,9 +340,9 @@ idna==3.20 \
     --hash=sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44 \
     --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
     # via requests
-markdown==3.11.2 \
-    --hash=sha256:87bf5d90f2d2882e2c02fcda182c2800456b985bff38913867c49706481514b0 \
-    --hash=sha256:f80390747a2a0ff2ba54da074ce4f862f72a6685f608cd2637b646a6d83993f5
+markdown==3.11.3 \
+    --hash=sha256:81eb91631dc97ad1efbc76019ef0f80fe90ca49ddf81546752d79989c3bfff3e \
+    --hash=sha256:e1a31a112232504d753e5c01bb8c2de90d3f0ba986b063e10770cf7695b09e73
     # via socketsecurity
 mdutils==1.8.1 \
     --hash=sha256:3d62d0a4d19fcd68d1daf956d1832f4a598663c73022bd95b09fae69c994b5ac \
@@ -370,13 +370,13 @@ smmap==5.0.3 \
     --hash=sha256:4d9debb8b99007ae47165abc08670bd74cb74b5227dda7f643eccc4e9eb5642c \
     --hash=sha256:c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f
     # via gitdb
-socketdev==3.6.2 \
-    --hash=sha256:ad51c879cad8d897ed1b949339fb7aded30d0fe25b2a3810c83079887e8610b5 \
-    --hash=sha256:ea94b2da1bdb89f3b70209b606f3abe5c609f66549c1deb160cf18f58e0c2e48
+socketdev==3.6.3 \
+    --hash=sha256:71a6dc6d1e0359f5f215e6da8c63bf479038ae07dd0ce29ec6c9fc8bf88054b0 \
+    --hash=sha256:ba5fb7bbce566ddd7c9ecdfbc37389708f5115f9edbb42eeff14ce7dc2278be8
     # via socketsecurity
-socketsecurity==2.11.13 \
-    --hash=sha256:7e5192cf9998157051ce06b39772642a546a8ea9eb290bcc776a9f2167245f0b \
-    --hash=sha256:a4884d9d6a1ee3cad9a763fbcd0f10864c6ea3930ea4808181383ea0bb33af13
+socketsecurity==2.13.2 \
+    --hash=sha256:1feaf8fce4e435d66f8a6e6fd495d5cc87a28148742d83dfc4249731e88991a1 \
+    --hash=sha256:378de0d0694be4a2b6b655eb3118f985b33a910ee471a0885ee9f44b96ab3fdb
     # via -r socket-cli.in
 soupsieve==4.1 \
     --hash=sha256:ca9abf7126667010d8f6e9b39bfc1bc3b23c8aed9bcb0f54a754dde969bb8aab \
